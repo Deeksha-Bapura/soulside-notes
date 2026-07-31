@@ -3,6 +3,8 @@ import cors from 'cors';
 import { notes, versions, events, seed, nextId, REVIEWERS } from './store';
 import { latencyAndFailureInjection } from './middleware';
 import type { NoteVersion, ReviewEvent } from '../src/domain/types';
+import { createServer } from 'http';
+import { attachRealtime } from './realtime';
 
 const app = express();
 app.use(cors());
@@ -196,6 +198,9 @@ app.post('/api/notes/:id/transitions', (req, res) => {
 });
 
 const PORT = 3001;
-app.listen(PORT, () => {
+const httpServer = createServer(app);
+attachRealtime(httpServer);
+
+httpServer.listen(PORT, () => {
   console.log(`Dummy backend listening on http://localhost:${PORT}`);
 });
