@@ -22,10 +22,14 @@ export interface NoteListResponse {
 export async function fetchNotes(params: {
   cursor?: string | null;
   limit?: number;
+  status?: string[];
 }): Promise<NoteListResponse> {
   const search = new URLSearchParams();
   if (params.cursor) search.set('cursor', params.cursor);
   if (params.limit) search.set('limit', String(params.limit));
+  if (params.status && params.status.length > 0) {
+    search.set('status', params.status.join(','));
+  }
 
   const res = await fetch(`/api/notes?${search.toString()}`);
   if (!res.ok) {

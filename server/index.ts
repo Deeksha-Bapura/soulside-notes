@@ -30,9 +30,15 @@ app.use(latencyAndFailureInjection);
 app.get('/api/notes', (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 50, 200);
   const cursorParam = req.query.cursor as string | undefined;
+  const statusParam = req.query.status as string | undefined;
+  const statusFilter = statusParam ? statusParam.split(',') : null;
 
-  // All notes, newest first (stable secondary sort by id to avoid ties).
-  const all = Array.from(notes.values()).sort((a, b) => {
+  let all = Array.from(notes.values());
+  if (statusFilter && statusFilter.length > 0) {
+    all = all.filter((note) => statusFilter.includes(note.status));
+  }
+
+  all = all.sort((a, b) => {
     if (a.updatedAt !== b.updatedAt) return b.updatedAt.localeCompare(a.updatedAt);
     return a.id.localeCompare(b.id);
   });
@@ -68,36 +74,6 @@ app.get('/api/notes', (req, res) => {
       updatedAt: note.updatedAt,
     })),
     meta: { total: all.length, returned: page.length, generatedAt: new Date().toISOString() },
-  });
-});
-
-// --- GET /api/notes/:id : full detail ---
-app.get('/api/notes/:id', (req, res) => {
-  const note = notes.get(req.params.id);
-  if (!note) {
-    res.status(404).json({ error: 'not_found' });
-    return;
-  }
-
-  const currentVersion = versions.get(note.currentVersionId);
-  const noteVersions = Array.from(versions.values()).filter((v) => v.noteId === note.id);
-  const noteEvents = Array.from(events.values()).filter((e) => e.noteId === note.id);
-
-  res.json({
-    id: note.id,
-    patient: note.patient,
-    status: note.status,
-    assignedReviewer: note.assignedReviewerId
-      ? { id: note.assignedReviewerId, displayName: note.assignedReviewerId, role: 'REVIEWER' }
-      : null,
-    currentVersion,
-    versions: noteVersions.map((v) => ({
-      id: v.id,
-      revision: v.revision,
-      parentVersionId: v.parentVersionId,
-      authoredBy: { id: v.authorId, role: v.authorRole },
-    })),
-    review: { events: noteEvents },
   });
 });
 
