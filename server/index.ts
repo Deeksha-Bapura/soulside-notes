@@ -77,6 +77,36 @@ app.get('/api/notes', (req, res) => {
   });
 });
 
+// --- GET /api/notes/:id : full detail ---
+app.get('/api/notes/:id', (req, res) => {
+  const note = notes.get(req.params.id);
+  if (!note) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+
+  const currentVersion = versions.get(note.currentVersionId);
+  const noteVersions = Array.from(versions.values()).filter((v) => v.noteId === note.id);
+  const noteEvents = Array.from(events.values()).filter((e) => e.noteId === note.id);
+
+  res.json({
+    id: note.id,
+    patient: note.patient,
+    status: note.status,
+    assignedReviewer: note.assignedReviewerId
+      ? { id: note.assignedReviewerId, displayName: note.assignedReviewerId, role: 'REVIEWER' }
+      : null,
+    currentVersion,
+    versions: noteVersions.map((v) => ({
+      id: v.id,
+      revision: v.revision,
+      parentVersionId: v.parentVersionId,
+      authoredBy: { id: v.authorId, role: v.authorRole },
+    })),
+    review: { events: noteEvents },
+  });
+});
+
 // --- POST /api/notes/:id/versions : autosave, with 409 conflict handling ---
 const seenMutationIds = new Set<string>();
 

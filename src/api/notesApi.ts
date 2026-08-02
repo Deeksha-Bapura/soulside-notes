@@ -37,3 +37,44 @@ export async function fetchNotes(params: {
   }
   return res.json();
 }
+
+export interface NoteDetail {
+  id: string;
+  patient: { id: string; displayName: string };
+  status: string;
+  assignedReviewer: { id: string; displayName: string; role: string } | null;
+  currentVersion: {
+    id: string;
+    noteId: string;
+    revision: number;
+    parentVersionId: string | null;
+    content: { sections: { S: string; O: string; A: string; P: string } };
+    authorId: string;
+    authorRole: string;
+    createdAt: string;
+  };
+  versions: Array<{
+    id: string;
+    revision: number;
+    parentVersionId: string | null;
+    authoredBy: { id: string; role: string };
+  }>;
+  review: {
+    events: Array<{
+      id: string;
+      fromStatus: string | null;
+      toStatus: string;
+      actorId: string;
+      occurredAt: string;
+      reason?: string;
+    }>;
+  };
+}
+
+export async function fetchNoteDetail(id: string): Promise<NoteDetail> {
+  const res = await fetch(`/api/notes/${id}`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch note ${id}: ${res.status}`);
+  }
+  return res.json();
+}

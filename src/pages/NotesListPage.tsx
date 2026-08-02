@@ -4,6 +4,7 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { useSearchParams } from 'react-router-dom';
 import { fetchNotes } from '../api/notesApi';
 import type { NoteStatus } from '../domain/types';
+import { Link } from 'react-router-dom';
 
 const ROW_HEIGHT = 40;
 
@@ -127,9 +128,13 @@ export default function NotesListPage() {
                     padding: '0 8px',
                   }}
                 >
-                  {isLoaderRow
-                    ? 'Loading more...'
-                    : `${note.patient.displayName} — ${note.status}`}
+                  {isLoaderRow ? (
+                    'Loading more...'
+                    ) : (
+                    <Link to={`/notes/${note.id}`} style={{ textDecoration: 'none', color: 'inherit' }}>
+                        {note.patient.displayName} — {note.status}
+                    </Link>
+                    )}
                 </div>
               );
             })}
