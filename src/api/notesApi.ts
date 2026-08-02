@@ -78,3 +78,20 @@ export async function fetchNoteDetail(id: string): Promise<NoteDetail> {
   }
   return res.json();
 }
+
+export async function postTransition(params: {
+  noteId: string;
+  to: string;
+  actorId: string;
+  reason?: string;
+}) {
+  const res = await fetch(`/api/notes/${params.noteId}/transitions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ to: params.to, actorId: params.actorId, reason: params.reason }),
+  });
+  if (!res.ok) {
+    throw new Error(`Transition failed: ${res.status}`);
+  }
+  return res.json();
+}
