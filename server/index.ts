@@ -107,6 +107,16 @@ app.get('/api/notes/:id', (req, res) => {
   });
 });
 
+// --- GET /api/versions/:versionId : full content of one specific version ---
+app.get('/api/versions/:versionId', (req, res) => {
+  const version = versions.get(req.params.versionId);
+  if (!version) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  res.json(version);
+});
+
 // --- POST /api/notes/:id/versions : autosave, with 409 conflict handling ---
 const seenMutationIds = new Set<string>();
 

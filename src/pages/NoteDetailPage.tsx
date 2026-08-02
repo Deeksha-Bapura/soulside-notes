@@ -1,11 +1,20 @@
 import { useParams, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useMachine } from '@xstate/react';
-import { fetchNoteDetail, postTransition, type NoteDetail } from '../api/notesApi';
+import { useState, useRef } from 'react';
+import {
+  fetchNoteDetail,
+  postTransition,
+  saveVersion,
+  fetchVersion,
+  type NoteDetail,
+  type VersionConflict,
+} from '../api/notesApi';
 import { noteMachine, type NoteMachineEvent } from '../domain/noteMachine';
 import type { NoteStatus } from '../domain/types';
 import { useCurrentUser } from '../auth/CurrentUserContext';
-import { useState } from 'react';
+import { useDebouncedCallback } from '../hooks/useDebouncedCallback';
+import { diffWords } from '../lib/diffWords';
 
 export default function NoteDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -23,12 +32,6 @@ export default function NoteDetailPage() {
   return <NoteDetailView key={data.id} note={data} />;
 }
 
-// Maps a machine event type to the status it transitions TO. This is a
-// known simplification: it's a parallel lookup table that could in
-// principle drift out of sync with the machine definition. A more robust
-// version would have the machine itself expose "target state for this
-// event" rather than duplicating that knowledge here — worth calling out
-// as a deliberate trade-off in the README rather than hiding it.
 const EVENT_TO_STATUS: Record<string, string> = {
   start_review: 'IN_REVIEW',
   return: 'READY_FOR_REVIEW',
@@ -37,6 +40,28 @@ const EVENT_TO_STATUS: Record<string, string> = {
   resubmit: 'READY_FOR_REVIEW',
   regenerate: 'GENERATING',
 };
+
+function DiffLine({ oldText, newText }: { oldText: string; newText: string }) {
+  const tokens = diffWords(oldText, newText);
+  return (
+    <p style={{ lineHeight: 1.6 }}>
+      {tokens.map((t, idx) => {
+        if (t.type === 'same') return <span key={idx}>{t.text}</span>;
+        if (t.type === 'added')
+          return (
+            <span key={idx} style={{ background: '#d4f7d4', textDecoration: 'none' }}>
+              {t.text}
+            </span>
+          );
+        return (
+          <span key={idx} style={{ background: '#f7d4d4', textDecoration: 'line-through' }}>
+            {t.text}
+          </span>
+        );
+      })}
+    </p>
+  );
+}
 
 function NoteDetailView({ note }: { note: NoteDetail }) {
   const { currentUser } = useCurrentUser();
@@ -53,17 +78,10 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
 
   const [state, send] = useMachine(noteMachine, { snapshot: initialSnapshot });
 
-const transitionMutation = useMutation({
+  const transitionMutation = useMutation({
     mutationFn: postTransition,
-
-    // Fires BEFORE the request goes out. This is where we make the UI
-    // lie convincingly — updating the cache as if the server already
-    // said yes — while keeping a snapshot so we can undo it if we're wrong.
     onMutate: async (variables) => {
-      // Stop any in-flight refetch for this note from clobbering our
-      // optimistic write with stale data arriving late.
       await queryClient.cancelQueries({ queryKey: ['note', note.id] });
-
       const previousNote = queryClient.getQueryData<NoteDetail>(['note', note.id]);
 
       queryClient.setQueryData<NoteDetail>(['note', note.id], (old) => {
@@ -80,29 +98,67 @@ const transitionMutation = useMutation({
         };
       });
 
-      // Returned value becomes `context` in onError/onSettled below —
-      // this is how we hand the "before" snapshot forward.
       return { previousNote };
     },
-
-    // Server said no (or the request errored/timed out) — undo the
-    // optimistic write by restoring exactly what was cached before.
     onError: (err, _variables, context) => {
       if (context?.previousNote) {
         queryClient.setQueryData(['note', note.id], context.previousNote);
       }
       alert(`Action failed: ${(err as Error).message}. Reverted.`);
     },
-
-    // Runs after EITHER success or error. Refetching here is what
-    // guarantees eventual correctness even if our optimistic guess about
-    // assignedReviewer/status was subtly wrong (e.g. a real backend might
-    // apply side effects our optimistic update didn't anticipate).
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['note', note.id] });
     },
   });
 
+  // --- SOAP editing + autosave ---
+  const [sections, setSections] = useState(note.currentVersion.content.sections);
+  const [dirtySections, setDirtySections] = useState<Set<string>>(new Set());
+  const baseVersionIdRef = useRef(note.currentVersion.id);
+  const [conflict, setConflict] = useState<VersionConflict | null>(null);
+
+  const saveMutation = useMutation({
+    mutationFn: saveVersion,
+    onSuccess: (result) => {
+      baseVersionIdRef.current = result.version.id;
+      setDirtySections(new Set());
+      queryClient.invalidateQueries({ queryKey: ['note', note.id] });
+    },
+    onError: (err) => {
+      if ((err as VersionConflict).error === 'version_conflict') {
+        setConflict(err as VersionConflict);
+      } else {
+        alert(`Save failed: ${(err as Error).message}`);
+      }
+    },
+  });
+
+  const debouncedSave = useDebouncedCallback((newSections: typeof sections) => {
+    saveMutation.mutate({
+      noteId: note.id,
+      baseVersionId: baseVersionIdRef.current,
+      content: { sections: newSections },
+      clientMutationId: `${note.id}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    });
+  }, 800);
+
+  function handleSectionChange(key: keyof typeof sections, value: string) {
+    const next = { ...sections, [key]: value };
+    setSections(next);
+    setDirtySections((prev) => new Set(prev).add(key));
+    debouncedSave(next);
+  }
+
+  // --- Version history sidebar ---
+  const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
+
+  const { data: selectedVersion, isLoading: isLoadingVersion } = useQuery({
+    queryKey: ['version', selectedVersionId],
+    queryFn: () => fetchVersion(selectedVersionId!),
+    enabled: !!selectedVersionId,
+  });
+
+  // --- Action bar setup ---
   const actor = { id: currentUser.id, role: currentUser.role };
 
   const actions: Array<{
@@ -163,78 +219,154 @@ const transitionMutation = useMutation({
   ];
 
   return (
-    <div style={{ padding: 20 }}>
-      <Link to="/">&larr; Back to notes</Link>
-      <h1>{note.patient.displayName}</h1>
-      <p>
-        Status: <strong>{state.value as string}</strong>
-        {note.assignedReviewer && ` — assigned to ${note.assignedReviewer.displayName}`}
-      </p>
+    <div style={{ padding: 20, display: 'flex', gap: 24 }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <Link to="/">&larr; Back to notes</Link>
+        <h1>{note.patient.displayName}</h1>
+        <p>
+          Status: <strong>{state.value as string}</strong>
+          {note.assignedReviewer && ` — assigned to ${note.assignedReviewer.displayName}`}
+        </p>
 
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
-        {actions.map(({ label, event, reasonIfDisabled }) => {
-          const enabled = state.can(event);
-          return (
-            <div key={label} title={enabled ? undefined : reasonIfDisabled}>
-              <button
-                disabled={!enabled || transitionMutation.isPending}
-                onClick={() => {
-                  send(event);
-                  transitionMutation.mutate({
-                    noteId: note.id,
-                    to: EVENT_TO_STATUS[event.type],
-                    actorId: currentUser.id,
-                    reason: event.type === 'reject' ? rejectReason : undefined,
-                  });
-                }}
-                style={{ opacity: enabled ? 1 : 0.5 }}
-              >
-                {label}
-              </button>
-              {!enabled && (
-                <div style={{ fontSize: 11, color: '#a00', maxWidth: 140 }}>
-                  {reasonIfDisabled}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      {transitionMutation.isPending && (
-        <p style={{ fontSize: 12, color: '#888' }}>Saving...</p>
-      )}
-
-      <div style={{ marginBottom: 16 }}>
-        <label>
-          Reject reason:{' '}
-          <input
-            type="text"
-            value={rejectReason}
-            onChange={(e) => setRejectReason(e.target.value)}
-            placeholder="required to reject"
-          />
-        </label>
-      </div>
-
-      <h2>Current version (revision {note.currentVersion.revision})</h2>
-      {Object.entries(note.currentVersion.content.sections).map(([key, value]) => (
-        <div key={key} style={{ marginBottom: 12 }}>
-          <strong>{key}</strong>
-          <p>{value}</p>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
+          {actions.map(({ label, event, reasonIfDisabled }) => {
+            const enabled = state.can(event);
+            return (
+              <div key={label} title={enabled ? undefined : reasonIfDisabled}>
+                <button
+                  disabled={!enabled || transitionMutation.isPending}
+                  onClick={() => {
+                    send(event);
+                    transitionMutation.mutate({
+                      noteId: note.id,
+                      to: EVENT_TO_STATUS[event.type],
+                      actorId: currentUser.id,
+                      reason: event.type === 'reject' ? rejectReason : undefined,
+                    });
+                  }}
+                  style={{ opacity: enabled ? 1 : 0.5 }}
+                >
+                  {label}
+                </button>
+                {!enabled && (
+                  <div style={{ fontSize: 11, color: '#a00', maxWidth: 140 }}>
+                    {reasonIfDisabled}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
-      ))}
 
-      <h3>Review history</h3>
-      <ul>
-        {note.review.events.map((event) => (
-          <li key={event.id}>
-            {event.fromStatus ?? '(created)'} → {event.toStatus} by {event.actorId} at{' '}
-            {new Date(event.occurredAt).toLocaleString()}
-            {event.reason && ` — "${event.reason}"`}
-          </li>
+        {transitionMutation.isPending && (
+          <p style={{ fontSize: 12, color: '#888' }}>Saving...</p>
+        )}
+
+        <div style={{ marginBottom: 16 }}>
+          <label>
+            Reject reason:{' '}
+            <input
+              type="text"
+              value={rejectReason}
+              onChange={(e) => setRejectReason(e.target.value)}
+              placeholder="required to reject"
+            />
+          </label>
+        </div>
+
+        <h2>Current version (revision {note.currentVersion.revision})</h2>
+        {(['S', 'O', 'A', 'P'] as const).map((key) => (
+          <div key={key} style={{ marginBottom: 12 }}>
+            <strong>
+              {key}
+              {dirtySections.has(key) && (
+                <span style={{ color: '#a80', fontSize: 12 }}> (unsaved)</span>
+              )}
+            </strong>
+            <textarea
+              value={sections[key]}
+              onChange={(e) => handleSectionChange(key, e.target.value)}
+              rows={2}
+              style={{ width: '100%', maxWidth: 600, display: 'block', marginTop: 4 }}
+            />
+          </div>
         ))}
-      </ul>
+        {saveMutation.isPending && <p style={{ fontSize: 12, color: '#888' }}>Saving version...</p>}
+        {conflict && (
+          <div style={{ background: '#fee', padding: 12, border: '1px solid #c00', marginBottom: 12 }}>
+            <strong>Conflict detected:</strong> someone else (revision {conflict.current.revision},
+            by {conflict.current.authoredBy.id}) saved changes after your last known version.
+            <br />
+            <em>(Full conflict resolution UI comes in the next step — for now, refresh to see their version.)</em>
+          </div>
+        )}
+
+        <h3>Review history</h3>
+        <ul>
+          {note.review.events.map((event) => (
+            <li key={event.id}>
+              {event.fromStatus ?? '(created)'} → {event.toStatus} by {event.actorId} at{' '}
+              {new Date(event.occurredAt).toLocaleString()}
+              {event.reason && ` — "${event.reason}"`}
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      {/* --- Version history sidebar --- */}
+      <div style={{ width: 320, flexShrink: 0, borderLeft: '1px solid #ddd', paddingLeft: 20 }}>
+        <h3>Version history</h3>
+        <ul style={{ listStyle: 'none', padding: 0 }}>
+          {note.versions
+            .slice()
+            .sort((a, b) => b.revision - a.revision)
+            .map((v) => (
+              <li key={v.id} style={{ marginBottom: 6 }}>
+                <button
+                  onClick={() => setSelectedVersionId(v.id === selectedVersionId ? null : v.id)}
+                  style={{
+                    background: v.id === selectedVersionId ? '#eef' : 'transparent',
+                    border: '1px solid #ccc',
+                    padding: '4px 8px',
+                    width: '100%',
+                    textAlign: 'left',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Revision {v.revision}
+                  {v.id === note.currentVersion.id && ' (current)'}
+                  <br />
+                  <span style={{ fontSize: 11, color: '#666' }}>
+                    by {v.authoredBy.id} ({v.authoredBy.role})
+                  </span>
+                </button>
+              </li>
+            ))}
+        </ul>
+
+        {selectedVersionId && (
+          <div style={{ marginTop: 16 }}>
+            <h4>
+              Diff: revision {selectedVersion?.revision ?? '...'} → current (
+              {note.currentVersion.revision})
+            </h4>
+            {isLoadingVersion && <p>Loading version...</p>}
+            {selectedVersion && (
+              <div style={{ fontSize: 13 }}>
+                {(['S', 'O', 'A', 'P'] as const).map((key) => (
+                  <div key={key} style={{ marginBottom: 10 }}>
+                    <strong>{key}</strong>
+                    <DiffLine
+                      oldText={selectedVersion.content.sections[key]}
+                      newText={sections[key]}
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

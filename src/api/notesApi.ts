@@ -95,3 +95,62 @@ export async function postTransition(params: {
   }
   return res.json();
 }
+
+export interface SaveVersionResult {
+  version: { id: string; revision: number; parentVersionId: string | null };
+}
+
+export interface VersionConflict {
+  error: 'version_conflict';
+  current: { id: string; revision: number; authoredBy: { id: string; role: string } };
+  commonAncestor: { id: string; revision: number } | null;
+}
+
+export async function saveVersion(params: {
+  noteId: string;
+  baseVersionId: string;
+  content: { sections: { S: string; O: string; A: string; P: string } };
+  clientMutationId: string;
+}): Promise<SaveVersionResult> {
+  const res = await fetch(`/api/notes/${params.noteId}/versions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      baseVersionId: params.baseVersionId,
+      content: params.content,
+      clientMutationId: params.clientMutationId,
+    }),
+  });
+
+  if (res.status === 409) {
+    const conflict: VersionConflict = await res.json();
+    // Throwing a typed object (not just an Error) lets the caller
+    // distinguish "a real conflict, show the diff UI" from "network
+    // failure, just retry" — these need very different UI responses.
+    throw conflict;
+  }
+
+  if (!res.ok) {
+    throw new Error(`Failed to save version: ${res.status}`);
+  }
+  return res.json();
+}
+
+export interface FullVersion {
+  id: string;
+  noteId: string;
+  revision: number;
+  parentVersionId: string | null;
+  content: { sections: { S: string; O: string; A: string; P: string } };
+  authorId: string;
+  authorRole: string;
+  createdAt: string;
+}
+
+export async function fetchVersion(versionId: string): Promise<FullVersion> {
+  const res = await fetch(`/api/versions/${versionId}`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch version ${versionId}: ${res.status}`);
+  }
+  return res.json();
+}
