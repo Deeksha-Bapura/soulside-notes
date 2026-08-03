@@ -23,6 +23,13 @@ app.post('/api/dev/seed', (req, res) => {
   res.json({ seeded: count });
 });
 
+// --- POST /api/telemetry : accepts batched client events ---
+app.post('/api/telemetry', (req, res) => {
+  const events = Array.isArray(req.body?.events) ? req.body.events : [];
+  console.log(`[telemetry] received batch of ${events.length} event(s)`);
+  res.status(204).end();
+});
+
 // Everything below this line gets realistic latency + 5% failure injection.
 app.use(latencyAndFailureInjection);
 

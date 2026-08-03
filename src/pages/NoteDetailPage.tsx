@@ -19,6 +19,7 @@ import { useOnlineStatus } from '../hooks/useOnlineStatus';
 import { enqueueWrite, getQueuedWritesForNote, clearQueuedWritesForNote } from '../offline/db';
 import { useSyncStore } from '../offline/syncStore';
 import { useNoteRealtime } from '../realtime/useNoteRealtime';
+import { track } from '../telemetry/track';
 
 export default function NoteDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -219,6 +220,13 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
 
   const [state, send] = useMachine(noteMachine, { snapshot: initialSnapshot });
 
+  // Telemetry: fires once per note opened (not on every re-render), since
+  // it's keyed on note.id in the dependency array.
+  useEffect(() => {
+    track('note_viewed', { noteId: note.id, status: note.status, role: currentUser.role });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [note.id]);
+
   useEffect(() => {
     getQueuedWritesForNote(note.id).then((writes) => setPendingCount(writes.length));
   }, [note.id, isOnline]);
@@ -275,6 +283,7 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
       const maybeConflict = err as VersionConflict;
       if (maybeConflict?.error === 'version_conflict') {
         setConflict(maybeConflict);
+        track('version_conflict_detected', { noteId: note.id });
         return;
       }
       await enqueueWrite({
@@ -285,6 +294,7 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
         queuedAt: new Date().toISOString(),
       });
       setPendingCount((c) => c + 1);
+      track('write_queued_offline', { noteId: note.id });
     },
   });
 
@@ -306,6 +316,7 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
   }
 
   function handleResolveConflict(resolved: SoapSections, newBaseVersionId: string) {
+    track('conflict_resolved', { noteId: note.id });
     setSections(resolved);
     baseVersionIdRef.current = newBaseVersionId;
     saveMutation.mutate({
@@ -441,6 +452,12 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
                       to: EVENT_TO_STATUS[event.type],
                       actorId: currentUser.id,
                       reason: event.type === 'reject' ? rejectReason : undefined,
+                    });
+                    track('note_transition_attempted', {
+                      noteId: note.id,
+                      eventType: event.type,
+                      fromStatus: note.status,
+                      toStatus: EVENT_TO_STATUS[event.type],
                     });
                   }}
                   style={{ opacity: enabled ? 1 : 0.5 }}
