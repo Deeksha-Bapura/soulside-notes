@@ -2,12 +2,14 @@ import { Routes, Route } from 'react-router-dom';
 import NotesListPage from './pages/NotesListPage';
 import NoteDetailPage from './pages/NoteDetailPage';
 import { useCurrentUser, FAKE_USERS } from './auth/CurrentUserContext';
+import { OfflineBanner } from './components/OfflineBanner';
 
 function App() {
   const { currentUser, setCurrentUserId } = useCurrentUser();
 
   return (
     <div>
+      <OfflineBanner />
       <div style={{ padding: '8px 20px', background: '#f4f4f4', borderBottom: '1px solid #ddd' }}>
         Acting as:{' '}
         <select
