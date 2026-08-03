@@ -15,6 +15,9 @@ import type { NoteStatus } from '../domain/types';
 import { useCurrentUser } from '../auth/CurrentUserContext';
 import { useDebouncedCallback } from '../hooks/useDebouncedCallback';
 import { diffWords } from '../lib/diffWords';
+import { useOnlineStatus } from '../hooks/useOnlineStatus';
+import { enqueueWrite, getQueuedWritesForNote, clearQueuedWritesForNote } from '../offline/db';
+import { useSyncStore } from '../offline/syncStore';
 
 export default function NoteDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -66,12 +69,6 @@ function DiffLine({ oldText, newText }: { oldText: string; newText: string }) {
   );
 }
 
-/**
- * The three-way conflict resolution panel. Shown when a save gets rejected
- * with a 409. Lets the user pick, per SOAP section, whether to keep their
- * local edits or take the other reviewer's version — then saves the
- * resolved merge rebased onto the server's current version.
- */
 function ConflictResolutionPanel({
   conflict,
   mySections,
@@ -94,7 +91,6 @@ function ConflictResolutionPanel({
     enabled: !!conflict.commonAncestor,
   });
 
-  // Default: keep my own edits for every section until the user says otherwise.
   const [choices, setChoices] = useState<Record<string, 'mine' | 'theirs'>>({
     S: 'mine',
     O: 'mine',
@@ -130,7 +126,7 @@ function ConflictResolutionPanel({
         Save conflict — revision {theirs.revision} was saved by {theirs.authorId} while you
         were editing
       </h3>
-      <p style={{ fontSize: 13, color: '#664 ' }}>
+      <p style={{ fontSize: 13, color: '#664' }}>
         Pick which version to keep for each section. Sections without an overlapping edit are
         usually safe to auto-merge; anything both of you touched needs a manual choice.
       </p>
@@ -207,6 +203,9 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
   const { currentUser } = useCurrentUser();
   const [rejectReason, setRejectReason] = useState('');
   const queryClient = useQueryClient();
+  const isOnline = useOnlineStatus(); // NEW
+  const conflictedNoteIds = useSyncStore((s) => s.conflictedNoteIds); // NEW
+  const [pendingCount, setPendingCount] = useState(0); // NEW: how many queued writes for THIS note
 
   const initialSnapshot = noteMachine.resolveState({
     value: note.status as NoteStatus,
@@ -217,6 +216,12 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
   });
 
   const [state, send] = useMachine(noteMachine, { snapshot: initialSnapshot });
+
+  // NEW: check how many writes are queued for this note, on mount and
+  // whenever we know the queue might have changed.
+  useEffect(() => {
+    getQueuedWritesForNote(note.id).then((writes) => setPendingCount(writes.length));
+  }, [note.id, isOnline]);
 
   const transitionMutation = useMutation({
     mutationFn: postTransition,
@@ -251,7 +256,6 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
     },
   });
 
-  // --- SOAP editing + autosave ---
   const [sections, setSections] = useState<SoapSections>(note.currentVersion.content.sections);
   const [dirtySections, setDirtySections] = useState<Set<string>>(new Set());
   const baseVersionIdRef = useRef(note.currentVersion.id);
@@ -263,21 +267,39 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
       baseVersionIdRef.current = result.version.id;
       setDirtySections(new Set());
       setConflict(null);
+      // A fresh, successful manual save supersedes any older queued write
+      // for this note — that stale write's intent is now moot, and
+      // retrying it would just conflict forever against a version that's
+      // already been superseded by what we just saved.
+      clearQueuedWritesForNote(note.id).then(() => setPendingCount(0));
+      useSyncStore.getState().clearConflict(note.id);
       queryClient.invalidateQueries({ queryKey: ['note', note.id] });
     },
-    onError: (err) => {
-      if ((err as VersionConflict).error === 'version_conflict') {
-        setConflict(err as VersionConflict);
-      } else {
-        alert(`Save failed: ${(err as Error).message}`);
+    
+    onError: async (err, variables) => {
+      const maybeConflict = err as VersionConflict;
+      if (maybeConflict?.error === 'version_conflict') {
+        // A REAL conflict — someone else's version won. This needs the
+        // user's judgment, so we show the resolution panel immediately
+        // rather than queueing (queueing a doomed write would just
+        // reproduce the same conflict later, uselessly).
+        setConflict(maybeConflict);
+        return;
       }
+      // Anything else (network failure, offline, simulated 500) — queue
+      // it for later rather than losing the edit or nagging with an alert.
+      await enqueueWrite({
+        id: variables.clientMutationId,
+        noteId: variables.noteId,
+        baseVersionId: variables.baseVersionId,
+        content: variables.content,
+        queuedAt: new Date().toISOString(),
+      });
+      setPendingCount((c) => c + 1);
     },
   });
 
   const debouncedSave = useDebouncedCallback((newSections: SoapSections) => {
-    // Don't autosave while a conflict is actively being resolved — the
-    // resolution panel below handles its own explicit save instead, to
-    // avoid a stray keystroke firing a second conflicting save mid-merge.
     if (conflict) return;
     saveMutation.mutate({
       noteId: note.id,
@@ -306,14 +328,10 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
   }
 
   function handleCancelConflict() {
-    // Discard local edits, snap back to whatever the server currently has.
     queryClient.invalidateQueries({ queryKey: ['note', note.id] });
     setConflict(null);
   }
 
-  // Keep local `sections` in sync if the underlying note data changes for
-  // reasons other than our own edits (e.g. after a resolved conflict causes
-  // a refetch that brings in genuinely new server content).
   useEffect(() => {
     if (!conflict) {
       setSections(note.currentVersion.content.sections);
@@ -322,7 +340,6 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [note.currentVersion.id]);
 
-  // --- Version history sidebar ---
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
 
   const { data: selectedVersion, isLoading: isLoadingVersion } = useQuery({
@@ -331,7 +348,6 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
     enabled: !!selectedVersionId,
   });
 
-  // --- Action bar setup ---
   const actor = { id: currentUser.id, role: currentUser.role };
 
   const actions: Array<{
@@ -391,6 +407,8 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
     },
   ];
 
+  const noteHasUnresolvedConflict = conflictedNoteIds.includes(note.id); // NEW
+
   return (
     <div style={{ padding: 20, display: 'flex', gap: 24 }}>
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -400,6 +418,20 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
           Status: <strong>{state.value as string}</strong>
           {note.assignedReviewer && ` — assigned to ${note.assignedReviewer.displayName}`}
         </p>
+
+        {/* NEW: pending-sync indicator */}
+        {pendingCount > 0 && (
+          <p style={{ background: '#eef', padding: 8, fontSize: 13 }}>
+            {pendingCount} change{pendingCount > 1 ? 's' : ''} waiting to sync
+            {!isOnline && ' (offline)'}.
+          </p>
+        )}
+        {noteHasUnresolvedConflict && (
+          <p style={{ background: '#fee', padding: 8, fontSize: 13, color: '#a00' }}>
+            A queued change to this note conflicted with a newer version. Edit the section below
+            to trigger conflict resolution.
+          </p>
+        )}
 
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
           {actions.map(({ label, event, reasonIfDisabled }) => {

@@ -3,9 +3,11 @@ import NotesListPage from './pages/NotesListPage';
 import NoteDetailPage from './pages/NoteDetailPage';
 import { useCurrentUser, FAKE_USERS } from './auth/CurrentUserContext';
 import { OfflineBanner } from './components/OfflineBanner';
+import { useReplayOnReconnect } from './offline/useReplayOnReconnect';
 
 function App() {
   const { currentUser, setCurrentUserId } = useCurrentUser();
+  useReplayOnReconnect();
 
   return (
     <div>
