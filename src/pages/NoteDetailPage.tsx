@@ -297,6 +297,23 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
         track('version_conflict_detected', { noteId: note.id });
         return;
       }
+
+      if (navigator.onLine) {
+        // Genuinely online — this was our backend's simulated random
+        // failure, not a real connectivity issue. Retry once rather than
+        // queuing, since queuing implies "you're offline" to the user,
+        // which would be misleading here.
+        try {
+          const result = await saveVersion(variables);
+          baseVersionIdRef.current = result.version.id;
+          setDirtySections(new Set());
+          queryClient.invalidateQueries({ queryKey: ['note', note.id] });
+          return;
+        } catch {
+          // Retry also failed — fall through and queue it below.
+        }
+      }
+
       await enqueueWrite({
         id: variables.clientMutationId,
         noteId: variables.noteId,
