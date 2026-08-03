@@ -20,6 +20,7 @@ import { enqueueWrite, getQueuedWritesForNote, clearQueuedWritesForNote } from '
 import { useSyncStore } from '../offline/syncStore';
 import { useNoteRealtime } from '../realtime/useNoteRealtime';
 import { track } from '../telemetry/track';
+import { replayQueuedWrites } from '../offline/replay';
 
 export default function NoteDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -228,8 +229,18 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
   }, [note.id]);
 
   useEffect(() => {
-    getQueuedWritesForNote(note.id).then((writes) => setPendingCount(writes.length));
-  }, [note.id, isOnline]);
+    if (isOnline) {
+      // Belt-and-suspenders: the global 'online' event (useReplayOnReconnect
+      // in App.tsx) doesn't always fire reliably from DevTools' network
+      // throttling toggle. Re-attempting replay here, keyed on our own
+      // isOnline hook flipping true, catches that case too.
+      replayQueuedWrites(queryClient).then(() => {
+        getQueuedWritesForNote(note.id).then((writes) => setPendingCount(writes.length));
+      });
+    } else {
+      getQueuedWritesForNote(note.id).then((writes) => setPendingCount(writes.length));
+    }
+  }, [note.id, isOnline, queryClient]);
 
   const transitionMutation = useMutation({
     mutationFn: postTransition,
@@ -300,12 +311,31 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
 
   const debouncedSave = useDebouncedCallback((newSections: SoapSections) => {
     if (conflict) return;
-    saveMutation.mutate({
+
+    const payload = {
       noteId: note.id,
       baseVersionId: baseVersionIdRef.current,
       content: { sections: newSections },
       clientMutationId: `${note.id}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-    });
+    };
+
+    // Known limitation of browser-based offline simulation: a stalled
+    // (not rejected) fetch never reaches onError, so a save made while
+    // offline can hang indefinitely instead of queueing. Checking
+    // navigator.onLine up front avoids ever attempting a doomed request
+    // in the first place, rather than relying solely on error handling.
+    if (!navigator.onLine) {
+      enqueueWrite({
+        id: payload.clientMutationId,
+        noteId: payload.noteId,
+        baseVersionId: payload.baseVersionId,
+        content: payload.content,
+        queuedAt: new Date().toISOString(),
+      }).then(() => setPendingCount((c) => c + 1));
+      return;
+    }
+
+    saveMutation.mutate(payload);
   }, 800);
 
   function handleSectionChange(key: keyof SoapSections, value: string) {
