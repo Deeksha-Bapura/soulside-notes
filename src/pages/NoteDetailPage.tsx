@@ -1,7 +1,7 @@
 import { useParams, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useMachine } from '@xstate/react';
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import {
   fetchNoteDetail,
   postTransition,
@@ -41,15 +41,18 @@ const EVENT_TO_STATUS: Record<string, string> = {
   regenerate: 'GENERATING',
 };
 
+type SoapSections = { S: string; O: string; A: string; P: string };
+const SECTION_KEYS = ['S', 'O', 'A', 'P'] as const;
+
 function DiffLine({ oldText, newText }: { oldText: string; newText: string }) {
   const tokens = diffWords(oldText, newText);
   return (
-    <p style={{ lineHeight: 1.6 }}>
+    <p style={{ lineHeight: 1.6, margin: '4px 0' }}>
       {tokens.map((t, idx) => {
         if (t.type === 'same') return <span key={idx}>{t.text}</span>;
         if (t.type === 'added')
           return (
-            <span key={idx} style={{ background: '#d4f7d4', textDecoration: 'none' }}>
+            <span key={idx} style={{ background: '#d4f7d4' }}>
               {t.text}
             </span>
           );
@@ -60,6 +63,143 @@ function DiffLine({ oldText, newText }: { oldText: string; newText: string }) {
         );
       })}
     </p>
+  );
+}
+
+/**
+ * The three-way conflict resolution panel. Shown when a save gets rejected
+ * with a 409. Lets the user pick, per SOAP section, whether to keep their
+ * local edits or take the other reviewer's version — then saves the
+ * resolved merge rebased onto the server's current version.
+ */
+function ConflictResolutionPanel({
+  conflict,
+  mySections,
+  onResolve,
+  onCancel,
+}: {
+  conflict: VersionConflict;
+  mySections: SoapSections;
+  onResolve: (resolved: SoapSections, newBaseVersionId: string) => void;
+  onCancel: () => void;
+}) {
+  const { data: theirs, isLoading: loadingTheirs } = useQuery({
+    queryKey: ['version', conflict.current.id],
+    queryFn: () => fetchVersion(conflict.current.id),
+  });
+
+  const { data: ancestor, isLoading: loadingAncestor } = useQuery({
+    queryKey: ['version', conflict.commonAncestor?.id],
+    queryFn: () => fetchVersion(conflict.commonAncestor!.id),
+    enabled: !!conflict.commonAncestor,
+  });
+
+  // Default: keep my own edits for every section until the user says otherwise.
+  const [choices, setChoices] = useState<Record<string, 'mine' | 'theirs'>>({
+    S: 'mine',
+    O: 'mine',
+    A: 'mine',
+    P: 'mine',
+  });
+
+  if (loadingTheirs || (conflict.commonAncestor && loadingAncestor)) {
+    return <div style={{ padding: 16 }}>Loading conflicting version...</div>;
+  }
+  if (!theirs) return null;
+
+  const ancestorSections = ancestor?.content.sections ?? theirs.content.sections;
+
+  const resolvedSections: SoapSections = {
+    S: choices.S === 'mine' ? mySections.S : theirs.content.sections.S,
+    O: choices.O === 'mine' ? mySections.O : theirs.content.sections.O,
+    A: choices.A === 'mine' ? mySections.A : theirs.content.sections.A,
+    P: choices.P === 'mine' ? mySections.P : theirs.content.sections.P,
+  };
+
+  return (
+    <div
+      style={{
+        background: '#fff8e1',
+        border: '2px solid #c90',
+        borderRadius: 6,
+        padding: 16,
+        marginBottom: 16,
+      }}
+    >
+      <h3 style={{ marginTop: 0 }}>
+        Save conflict — revision {theirs.revision} was saved by {theirs.authorId} while you
+        were editing
+      </h3>
+      <p style={{ fontSize: 13, color: '#664 ' }}>
+        Pick which version to keep for each section. Sections without an overlapping edit are
+        usually safe to auto-merge; anything both of you touched needs a manual choice.
+      </p>
+
+      {SECTION_KEYS.map((key) => {
+        const ancestorText = ancestorSections[key];
+        const mineText = mySections[key];
+        const theirsText = theirs.content.sections[key];
+        const bothChangedSameSection = mineText !== ancestorText && theirsText !== ancestorText;
+
+        return (
+          <div
+            key={key}
+            style={{
+              marginBottom: 16,
+              padding: 10,
+              background: '#fff',
+              border: bothChangedSameSection ? '1px solid #c66' : '1px solid #ddd',
+              borderRadius: 4,
+            }}
+          >
+            <strong>
+              {key}
+              {bothChangedSameSection && (
+                <span style={{ color: '#c00', fontSize: 12 }}> — both edited this section</span>
+              )}
+            </strong>
+
+            <div style={{ fontSize: 12, color: '#888', marginTop: 6 }}>
+              Your changes (vs. common ancestor):
+            </div>
+            <DiffLine oldText={ancestorText} newText={mineText} />
+
+            <div style={{ fontSize: 12, color: '#888', marginTop: 6 }}>
+              Their changes (vs. common ancestor):
+            </div>
+            <DiffLine oldText={ancestorText} newText={theirsText} />
+
+            <div style={{ marginTop: 6 }}>
+              <label style={{ marginRight: 16 }}>
+                <input
+                  type="radio"
+                  name={`choice-${key}`}
+                  checked={choices[key] === 'mine'}
+                  onChange={() => setChoices((c) => ({ ...c, [key]: 'mine' }))}
+                />{' '}
+                Keep mine
+              </label>
+              <label>
+                <input
+                  type="radio"
+                  name={`choice-${key}`}
+                  checked={choices[key] === 'theirs'}
+                  onChange={() => setChoices((c) => ({ ...c, [key]: 'theirs' }))}
+                />{' '}
+                Keep theirs
+              </label>
+            </div>
+          </div>
+        );
+      })}
+
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button onClick={() => onResolve(resolvedSections, theirs.id)}>
+          Save merged version
+        </button>
+        <button onClick={onCancel}>Cancel (discard my unsaved changes)</button>
+      </div>
+    </div>
   );
 }
 
@@ -112,7 +252,7 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
   });
 
   // --- SOAP editing + autosave ---
-  const [sections, setSections] = useState(note.currentVersion.content.sections);
+  const [sections, setSections] = useState<SoapSections>(note.currentVersion.content.sections);
   const [dirtySections, setDirtySections] = useState<Set<string>>(new Set());
   const baseVersionIdRef = useRef(note.currentVersion.id);
   const [conflict, setConflict] = useState<VersionConflict | null>(null);
@@ -122,6 +262,7 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
     onSuccess: (result) => {
       baseVersionIdRef.current = result.version.id;
       setDirtySections(new Set());
+      setConflict(null);
       queryClient.invalidateQueries({ queryKey: ['note', note.id] });
     },
     onError: (err) => {
@@ -133,7 +274,11 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
     },
   });
 
-  const debouncedSave = useDebouncedCallback((newSections: typeof sections) => {
+  const debouncedSave = useDebouncedCallback((newSections: SoapSections) => {
+    // Don't autosave while a conflict is actively being resolved — the
+    // resolution panel below handles its own explicit save instead, to
+    // avoid a stray keystroke firing a second conflicting save mid-merge.
+    if (conflict) return;
     saveMutation.mutate({
       noteId: note.id,
       baseVersionId: baseVersionIdRef.current,
@@ -142,12 +287,40 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
     });
   }, 800);
 
-  function handleSectionChange(key: keyof typeof sections, value: string) {
+  function handleSectionChange(key: keyof SoapSections, value: string) {
     const next = { ...sections, [key]: value };
     setSections(next);
     setDirtySections((prev) => new Set(prev).add(key));
     debouncedSave(next);
   }
+
+  function handleResolveConflict(resolved: SoapSections, newBaseVersionId: string) {
+    setSections(resolved);
+    baseVersionIdRef.current = newBaseVersionId;
+    saveMutation.mutate({
+      noteId: note.id,
+      baseVersionId: newBaseVersionId,
+      content: { sections: resolved },
+      clientMutationId: `${note.id}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    });
+  }
+
+  function handleCancelConflict() {
+    // Discard local edits, snap back to whatever the server currently has.
+    queryClient.invalidateQueries({ queryKey: ['note', note.id] });
+    setConflict(null);
+  }
+
+  // Keep local `sections` in sync if the underlying note data changes for
+  // reasons other than our own edits (e.g. after a resolved conflict causes
+  // a refetch that brings in genuinely new server content).
+  useEffect(() => {
+    if (!conflict) {
+      setSections(note.currentVersion.content.sections);
+      baseVersionIdRef.current = note.currentVersion.id;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [note.currentVersion.id]);
 
   // --- Version history sidebar ---
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
@@ -274,8 +447,17 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
           </label>
         </div>
 
+        {conflict && (
+          <ConflictResolutionPanel
+            conflict={conflict}
+            mySections={sections}
+            onResolve={handleResolveConflict}
+            onCancel={handleCancelConflict}
+          />
+        )}
+
         <h2>Current version (revision {note.currentVersion.revision})</h2>
-        {(['S', 'O', 'A', 'P'] as const).map((key) => (
+        {SECTION_KEYS.map((key) => (
           <div key={key} style={{ marginBottom: 12 }}>
             <strong>
               {key}
@@ -287,19 +469,12 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
               value={sections[key]}
               onChange={(e) => handleSectionChange(key, e.target.value)}
               rows={2}
+              disabled={!!conflict}
               style={{ width: '100%', maxWidth: 600, display: 'block', marginTop: 4 }}
             />
           </div>
         ))}
         {saveMutation.isPending && <p style={{ fontSize: 12, color: '#888' }}>Saving version...</p>}
-        {conflict && (
-          <div style={{ background: '#fee', padding: 12, border: '1px solid #c00', marginBottom: 12 }}>
-            <strong>Conflict detected:</strong> someone else (revision {conflict.current.revision},
-            by {conflict.current.authoredBy.id}) saved changes after your last known version.
-            <br />
-            <em>(Full conflict resolution UI comes in the next step — for now, refresh to see their version.)</em>
-          </div>
-        )}
 
         <h3>Review history</h3>
         <ul>
@@ -313,7 +488,6 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
         </ul>
       </div>
 
-      {/* --- Version history sidebar --- */}
       <div style={{ width: 320, flexShrink: 0, borderLeft: '1px solid #ddd', paddingLeft: 20 }}>
         <h3>Version history</h3>
         <ul style={{ listStyle: 'none', padding: 0 }}>
@@ -353,7 +527,7 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
             {isLoadingVersion && <p>Loading version...</p>}
             {selectedVersion && (
               <div style={{ fontSize: 13 }}>
-                {(['S', 'O', 'A', 'P'] as const).map((key) => (
+                {SECTION_KEYS.map((key) => (
                   <div key={key} style={{ marginBottom: 10 }}>
                     <strong>{key}</strong>
                     <DiffLine
