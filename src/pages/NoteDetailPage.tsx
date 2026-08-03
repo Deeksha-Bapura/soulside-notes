@@ -71,11 +71,13 @@ function DiffLine({ oldText, newText }: { oldText: string; newText: string }) {
         if (t.type === 'added')
           return (
             <span key={idx} style={{ background: '#d4f7d4' }}>
+              <span aria-hidden="true">+</span>
               {t.text}
             </span>
           );
         return (
           <span key={idx} style={{ background: '#f7d4d4', textDecoration: 'line-through' }}>
+            <span aria-hidden="true">−</span>
             {t.text}
           </span>
         );
@@ -112,6 +114,13 @@ function ConflictResolutionPanel({
     A: 'mine',
     P: 'mine',
   });
+  const headingRef = useRef<HTMLHeadingElement>(null);
+
+  useEffect(() => {
+    if (theirs) {
+      headingRef.current?.focus();
+    }
+  }, [theirs]);
 
   if (loadingTheirs || (conflict.commonAncestor && loadingAncestor)) {
     return <div style={{ padding: 16 }}>Loading conflicting version...</div>;
@@ -139,7 +148,7 @@ function ConflictResolutionPanel({
         marginBottom: 16,
       }}
     >
-      <h3 id="conflict-panel-heading" style={{ marginTop: 0 }}>
+      <h3 id="conflict-panel-heading" ref={headingRef} tabIndex={-1} style={{ marginTop: 0 }}>
         Save conflict — revision {theirs.revision} was saved by {theirs.authorId} while you
         were editing
       </h3>
