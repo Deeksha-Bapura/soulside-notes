@@ -210,6 +210,7 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
   const conflictedNoteIds = useSyncStore((s) => s.conflictedNoteIds);
   const [pendingCount, setPendingCount] = useState(0);
   const { viewers } = useNoteRealtime(note.id);
+  const [announcement, setAnnouncement] = useState('');
 
   const initialSnapshot = noteMachine.resolveState({
     value: note.status as NoteStatus,

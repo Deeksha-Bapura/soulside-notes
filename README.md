@@ -29,11 +29,17 @@ rollback, notes list virtualization (tested to 500 seeded notes; the mechanism i
 count-independent — see Scale section), the 409 three-way conflict resolution UI, the
 dummy backend with latency/failure injection.
 
-**Built real but modest:** offline queue (core "survive reload, replay in order" loop
-works; not hardened against every edge case like multi-tab IndexedDB contention),
-real-time reconciliation (status changes and presence work; the periodic
-auto-approve simulation is simplistic), telemetry (the `track()` pattern and batching
-are real; only a handful of call sites are instrumented, not every possible action).
+**Built real but modest:** offline queue — the core "survive reload, replay in order"
+loop works, and this was verified rigorously rather than just built-and-assumed: testing
+surfaced two real bugs (a stalled fetch under simulated offline conditions never
+triggering the error handler, and the browser's `online` event not always firing
+reliably) that were found and fixed during manual testing, not just documented as known
+gaps. Not hardened against multi-tab IndexedDB contention or truly exhaustive edge cases.
+Real-time reconciliation (status changes and presence work reliably, verified with two
+simultaneous browser tabs; the periodic auto-approve simulation itself is simplistic —
+a random dice roll, not a realistic actor model). Telemetry (the `track()` pattern and
+batching are real; only a handful of call sites are instrumented, not every possible
+action).
 
 **Explicitly cut:**
 - CRDT collaborative editing — listed as bonus in the spec, out of scope here
