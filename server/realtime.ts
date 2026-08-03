@@ -109,7 +109,7 @@ export function attachRealtime(server: Server) {
     const note = notes.get(noteId);
     if (!note) return;
 
-    // Only simulate a transition on notes actively being reviewed.
+
     if (note.status === 'IN_REVIEW' && Math.random() < 0.3) {
       const fromStatus = note.status;
       note.status = 'APPROVED';

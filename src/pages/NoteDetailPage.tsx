@@ -18,6 +18,7 @@ import { diffWords } from '../lib/diffWords';
 import { useOnlineStatus } from '../hooks/useOnlineStatus';
 import { enqueueWrite, getQueuedWritesForNote, clearQueuedWritesForNote } from '../offline/db';
 import { useSyncStore } from '../offline/syncStore';
+import { useNoteRealtime } from '../realtime/useNoteRealtime';
 
 export default function NoteDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -203,9 +204,10 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
   const { currentUser } = useCurrentUser();
   const [rejectReason, setRejectReason] = useState('');
   const queryClient = useQueryClient();
-  const isOnline = useOnlineStatus(); // NEW
-  const conflictedNoteIds = useSyncStore((s) => s.conflictedNoteIds); // NEW
-  const [pendingCount, setPendingCount] = useState(0); // NEW: how many queued writes for THIS note
+  const isOnline = useOnlineStatus();
+  const conflictedNoteIds = useSyncStore((s) => s.conflictedNoteIds);
+  const [pendingCount, setPendingCount] = useState(0);
+  const { viewers } = useNoteRealtime(note.id);
 
   const initialSnapshot = noteMachine.resolveState({
     value: note.status as NoteStatus,
@@ -217,8 +219,6 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
 
   const [state, send] = useMachine(noteMachine, { snapshot: initialSnapshot });
 
-  // NEW: check how many writes are queued for this note, on mount and
-  // whenever we know the queue might have changed.
   useEffect(() => {
     getQueuedWritesForNote(note.id).then((writes) => setPendingCount(writes.length));
   }, [note.id, isOnline]);
@@ -267,27 +267,16 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
       baseVersionIdRef.current = result.version.id;
       setDirtySections(new Set());
       setConflict(null);
-      // A fresh, successful manual save supersedes any older queued write
-      // for this note — that stale write's intent is now moot, and
-      // retrying it would just conflict forever against a version that's
-      // already been superseded by what we just saved.
       clearQueuedWritesForNote(note.id).then(() => setPendingCount(0));
       useSyncStore.getState().clearConflict(note.id);
       queryClient.invalidateQueries({ queryKey: ['note', note.id] });
     },
-    
     onError: async (err, variables) => {
       const maybeConflict = err as VersionConflict;
       if (maybeConflict?.error === 'version_conflict') {
-        // A REAL conflict — someone else's version won. This needs the
-        // user's judgment, so we show the resolution panel immediately
-        // rather than queueing (queueing a doomed write would just
-        // reproduce the same conflict later, uselessly).
         setConflict(maybeConflict);
         return;
       }
-      // Anything else (network failure, offline, simulated 500) — queue
-      // it for later rather than losing the edit or nagging with an alert.
       await enqueueWrite({
         id: variables.clientMutationId,
         noteId: variables.noteId,
@@ -407,7 +396,7 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
     },
   ];
 
-  const noteHasUnresolvedConflict = conflictedNoteIds.includes(note.id); // NEW
+  const noteHasUnresolvedConflict = conflictedNoteIds.includes(note.id);
 
   return (
     <div style={{ padding: 20, display: 'flex', gap: 24 }}>
@@ -415,11 +404,16 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
         <Link to="/">&larr; Back to notes</Link>
         <h1>{note.patient.displayName}</h1>
         <p>
-          Status: <strong>{state.value as string}</strong>
+          Status: <strong>{note.status}</strong>
           {note.assignedReviewer && ` — assigned to ${note.assignedReviewer.displayName}`}
         </p>
 
-        {/* NEW: pending-sync indicator */}
+        {viewers.length > 1 && (
+          <p style={{ fontSize: 12, color: '#666' }}>
+            👀 Also viewing: {viewers.filter((v) => v.id).map((v) => v.id).join(', ')}
+          </p>
+        )}
+
         {pendingCount > 0 && (
           <p style={{ background: '#eef', padding: 8, fontSize: 13 }}>
             {pendingCount} change{pendingCount > 1 ? 's' : ''} waiting to sync
