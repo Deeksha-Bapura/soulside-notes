@@ -17,10 +17,10 @@ import { useDebouncedCallback } from '../hooks/useDebouncedCallback';
 import { diffWords } from '../lib/diffWords';
 import { useOnlineStatus } from '../hooks/useOnlineStatus';
 import { enqueueWrite, getQueuedWritesForNote, clearQueuedWritesForNote } from '../offline/db';
+import { replayQueuedWrites } from '../offline/replay';
 import { useSyncStore } from '../offline/syncStore';
 import { useNoteRealtime } from '../realtime/useNoteRealtime';
 import { track } from '../telemetry/track';
-import { replayQueuedWrites } from '../offline/replay';
 
 export default function NoteDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -49,6 +49,18 @@ const EVENT_TO_STATUS: Record<string, string> = {
 
 type SoapSections = { S: string; O: string; A: string; P: string };
 const SECTION_KEYS = ['S', 'O', 'A', 'P'] as const;
+
+// Visually hidden but still readable by screen readers — the standard
+// "sr-only" pattern. display:none would hide it from screen readers too,
+// which is why this uses clipping/1px sizing instead.
+const visuallyHiddenStyle: React.CSSProperties = {
+  position: 'absolute',
+  width: 1,
+  height: 1,
+  overflow: 'hidden',
+  clip: 'rect(0,0,0,0)',
+  whiteSpace: 'nowrap',
+};
 
 function DiffLine({ oldText, newText }: { oldText: string; newText: string }) {
   const tokens = diffWords(oldText, newText);
@@ -117,6 +129,8 @@ function ConflictResolutionPanel({
 
   return (
     <div
+      role="dialog"
+      aria-labelledby="conflict-panel-heading"
       style={{
         background: '#fff8e1',
         border: '2px solid #c90',
@@ -125,7 +139,7 @@ function ConflictResolutionPanel({
         marginBottom: 16,
       }}
     >
-      <h3 style={{ marginTop: 0 }}>
+      <h3 id="conflict-panel-heading" style={{ marginTop: 0 }}>
         Save conflict — revision {theirs.revision} was saved by {theirs.authorId} while you
         were editing
       </h3>
@@ -209,7 +223,7 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
   const isOnline = useOnlineStatus();
   const conflictedNoteIds = useSyncStore((s) => s.conflictedNoteIds);
   const [pendingCount, setPendingCount] = useState(0);
-  const { viewers } = useNoteRealtime(note.id);
+  const { viewers, lastRemoteChange } = useNoteRealtime(note.id);
   const [announcement, setAnnouncement] = useState('');
 
   const initialSnapshot = noteMachine.resolveState({
@@ -222,8 +236,6 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
 
   const [state, send] = useMachine(noteMachine, { snapshot: initialSnapshot });
 
-  // Telemetry: fires once per note opened (not on every re-render), since
-  // it's keyed on note.id in the dependency array.
   useEffect(() => {
     track('note_viewed', { noteId: note.id, status: note.status, role: currentUser.role });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -231,10 +243,6 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
 
   useEffect(() => {
     if (isOnline) {
-      // Belt-and-suspenders: the global 'online' event (useReplayOnReconnect
-      // in App.tsx) doesn't always fire reliably from DevTools' network
-      // throttling toggle. Re-attempting replay here, keyed on our own
-      // isOnline hook flipping true, catches that case too.
       replayQueuedWrites(queryClient).then(() => {
         getQueuedWritesForNote(note.id).then((writes) => setPendingCount(writes.length));
       });
@@ -242,6 +250,17 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
       getQueuedWritesForNote(note.id).then((writes) => setPendingCount(writes.length));
     }
   }, [note.id, isOnline, queryClient]);
+
+  // Screen-reader announcement for status changes pushed by someone else
+  // in real time — this is the one case where the UI updates without any
+  // action from the current user, so it needs an explicit announcement.
+  useEffect(() => {
+    if (lastRemoteChange) {
+      setAnnouncement(
+        `Note status changed to ${lastRemoteChange.toStatus} by ${lastRemoteChange.actorId}`
+      );
+    }
+  }, [lastRemoteChange]);
 
   const transitionMutation = useMutation({
     mutationFn: postTransition,
@@ -264,6 +283,12 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
       });
 
       return { previousNote };
+    },
+    onSuccess: (_result, variables) => {
+      // Announce our own successful action too, not just remote pushes —
+      // a screen reader user gets no other confirmation that their click
+      // actually took effect beyond the visual status text changing.
+      setAnnouncement(`Note transitioned to ${variables.to}`);
     },
     onError: (err, _variables, context) => {
       if (context?.previousNote) {
@@ -300,10 +325,6 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
       }
 
       if (navigator.onLine) {
-        // Genuinely online — this was our backend's simulated random
-        // failure, not a real connectivity issue. Retry once rather than
-        // queuing, since queuing implies "you're offline" to the user,
-        // which would be misleading here.
         try {
           const result = await saveVersion(variables);
           baseVersionIdRef.current = result.version.id;
@@ -337,11 +358,6 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
       clientMutationId: `${note.id}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     };
 
-    // Known limitation of browser-based offline simulation: a stalled
-    // (not rejected) fetch never reaches onError, so a save made while
-    // offline can hang indefinitely instead of queueing. Checking
-    // navigator.onLine up front avoids ever attempting a doomed request
-    // in the first place, rather than relying solely on error handling.
     if (!navigator.onLine) {
       enqueueWrite({
         id: payload.clientMutationId,
@@ -460,6 +476,10 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
   return (
     <div style={{ padding: 20, display: 'flex', gap: 24 }}>
       <div style={{ flex: 1, minWidth: 0 }}>
+        <div role="status" aria-live="polite" style={visuallyHiddenStyle}>
+          {announcement}
+        </div>
+
         <Link to="/">&larr; Back to notes</Link>
         <h1>{note.patient.displayName}</h1>
         <p>
@@ -489,10 +509,12 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
           {actions.map(({ label, event, reasonIfDisabled }) => {
             const enabled = state.can(event);
+            const reasonId = `reason-${label.replace(/\s+/g, '-').toLowerCase()}`;
             return (
-              <div key={label} title={enabled ? undefined : reasonIfDisabled}>
+              <div key={label}>
                 <button
                   disabled={!enabled || transitionMutation.isPending}
+                  aria-describedby={!enabled ? reasonId : undefined}
                   onClick={() => {
                     send(event);
                     transitionMutation.mutate({
@@ -513,7 +535,7 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
                   {label}
                 </button>
                 {!enabled && (
-                  <div style={{ fontSize: 11, color: '#a00', maxWidth: 140 }}>
+                  <div id={reasonId} style={{ fontSize: 11, color: '#a00', maxWidth: 140 }}>
                     {reasonIfDisabled}
                   </div>
                 )}
@@ -527,9 +549,10 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
         )}
 
         <div style={{ marginBottom: 16 }}>
-          <label>
+          <label htmlFor="reject-reason-input">
             Reject reason:{' '}
             <input
+              id="reject-reason-input"
               type="text"
               value={rejectReason}
               onChange={(e) => setRejectReason(e.target.value)}
@@ -550,13 +573,16 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
         <h2>Current version (revision {note.currentVersion.revision})</h2>
         {SECTION_KEYS.map((key) => (
           <div key={key} style={{ marginBottom: 12 }}>
-            <strong>
-              {key}
-              {dirtySections.has(key) && (
-                <span style={{ color: '#a80', fontSize: 12 }}> (unsaved)</span>
-              )}
-            </strong>
+            <label htmlFor={`section-${key}`}>
+              <strong>
+                {key}
+                {dirtySections.has(key) && (
+                  <span style={{ color: '#a80', fontSize: 12 }}> (unsaved)</span>
+                )}
+              </strong>
+            </label>
             <textarea
+              id={`section-${key}`}
               value={sections[key]}
               onChange={(e) => handleSectionChange(key, e.target.value)}
               rows={2}
@@ -589,6 +615,7 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
               <li key={v.id} style={{ marginBottom: 6 }}>
                 <button
                   onClick={() => setSelectedVersionId(v.id === selectedVersionId ? null : v.id)}
+                  aria-pressed={v.id === selectedVersionId}
                   style={{
                     background: v.id === selectedVersionId ? '#eef' : 'transparent',
                     border: '1px solid #ccc',
