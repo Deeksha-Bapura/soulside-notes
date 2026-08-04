@@ -45,6 +45,7 @@ const EVENT_TO_STATUS: Record<string, string> = {
   reject: 'REJECTED',
   resubmit: 'READY_FOR_REVIEW',
   regenerate: 'GENERATING',
+  amend: 'AMENDED',
 };
 
 type SoapSections = { S: string; O: string; A: string; P: string };
@@ -459,12 +460,33 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [note.currentVersion.id]);
 
-  const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
+  // --- Any-two-versions diff picker ---
+  const [compareVersionIds, setCompareVersionIds] = useState<string[]>([]);
 
-  const { data: selectedVersion, isLoading: isLoadingVersion } = useQuery({
-    queryKey: ['version', selectedVersionId],
-    queryFn: () => fetchVersion(selectedVersionId!),
-    enabled: !!selectedVersionId,
+  function toggleCompareVersion(versionId: string) {
+    setCompareVersionIds((prev) => {
+      if (prev.includes(versionId)) return prev.filter((id) => id !== versionId);
+      if (prev.length >= 2) return prev;
+      return [...prev, versionId];
+    });
+  }
+
+  const sortedCompareIds = [...compareVersionIds].sort((a, b) => {
+    const va = note.versions.find((v) => v.id === a)?.revision ?? 0;
+    const vb = note.versions.find((v) => v.id === b)?.revision ?? 0;
+    return va - vb;
+  });
+
+  const { data: compareA, isLoading: isLoadingCompareA } = useQuery({
+    queryKey: ['version', sortedCompareIds[0]],
+    queryFn: () => fetchVersion(sortedCompareIds[0]),
+    enabled: !!sortedCompareIds[0],
+  });
+
+  const { data: compareB, isLoading: isLoadingCompareB } = useQuery({
+    queryKey: ['version', sortedCompareIds[1]],
+    queryFn: () => fetchVersion(sortedCompareIds[1]!),
+    enabled: !!sortedCompareIds[1],
   });
 
   const actor = { id: currentUser.id, role: currentUser.role };
@@ -512,6 +534,14 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
             : 'Not available in the current state',
     },
     {
+      label: 'Start amendment',
+      event: { type: 'amend', actor, now: Date.now() },
+      reasonIfDisabled:
+        note.status === 'LOCKED'
+          ? 'Grace period has expired; this note is locked'
+          : 'Not available in the current state',
+    },
+    {
       label: 'Resubmit',
       event: { type: 'resubmit', actor },
       reasonIfDisabled:
@@ -530,6 +560,7 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
   ];
 
   const noteHasUnresolvedConflict = conflictedNoteIds.includes(note.id);
+  const isLocked = note.status === 'LOCKED';
 
   return (
     <div style={{ padding: 24, display: 'flex', gap: 28, maxWidth: 1200, margin: '0 auto' }}>
@@ -584,6 +615,20 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
             to trigger conflict resolution.
           </p>
         )}
+        {isLocked && (
+          <p
+            style={{
+              background: '#f0f0f0',
+              color: '#555',
+              padding: '8px 12px',
+              borderRadius: 6,
+              fontSize: 13,
+            }}
+          >
+            🔒 This note is locked and read-only. The 24-hour amendment grace period has
+            expired.
+          </p>
+        )}
 
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', margin: '16px 0' }}>
           {actions.map(({ label, event, reasonIfDisabled, primary }) => {
@@ -620,7 +665,7 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
                         : '1px solid var(--navy-900)'
                       : '1px solid var(--border-subtle)',
                     background: enabled ? (primary ? 'var(--amber-500)' : '#fff') : '#f5f5f5',
-                    color: enabled ? (primary ? 'var(--navy-900)' : 'var(--navy-900)') : '#aaa',
+                    color: enabled ? 'var(--navy-900)' : '#aaa',
                     cursor: enabled ? 'pointer' : 'not-allowed',
                     transition: 'all 0.15s ease',
                   }}
@@ -699,7 +744,7 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
               value={sections[key]}
               onChange={(e) => handleSectionChange(key, e.target.value)}
               rows={2}
-              disabled={!!conflict}
+              disabled={!!conflict || isLocked}
               style={{
                 width: '100%',
                 maxWidth: 640,
@@ -713,7 +758,7 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
                 fontSize: 14,
                 resize: 'vertical',
                 outline: 'none',
-                background: conflict ? '#f5f5f5' : '#fff',
+                background: conflict || isLocked ? '#f5f5f5' : '#fff',
               }}
             />
           </div>
@@ -721,64 +766,93 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
         {saveMutation.isPending && <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>Saving version...</p>}
 
         <h3 style={{ fontSize: 18 }}>Review history</h3>
-        <ul>
+        <ul style={{ listStyle: 'none', padding: 0, fontSize: 13 }}>
           {note.review.events.map((event) => (
-            <li key={event.id}>
-              {event.fromStatus ?? '(created)'} → {event.toStatus} by {event.actorId} at{' '}
-              {new Date(event.occurredAt).toLocaleString()}
+            <li
+              key={event.id}
+              style={{
+                padding: '8px 0',
+                borderBottom: '1px solid var(--border-subtle)',
+                color: 'var(--text-muted)',
+              }}
+            >
+              <span style={{ color: 'var(--navy-900)', fontWeight: 500 }}>
+                {event.fromStatus ?? '(created)'} → {event.toStatus}
+              </span>{' '}
+              by {event.actorId} at {new Date(event.occurredAt).toLocaleString()}
               {event.reason && ` — "${event.reason}"`}
             </li>
           ))}
         </ul>
       </div>
 
-      <div style={{ width: 320, flexShrink: 0, borderLeft: '1px solid var(--border-subtle)', paddingLeft: 24 }}>
+      <div style={{ width: 340, flexShrink: 0, borderLeft: '1px solid var(--border-subtle)', paddingLeft: 24 }}>
         <h3 style={{ fontSize: 18 }}>Version history</h3>
+        <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: -8 }}>
+          Check one version to diff against your current edits, or check two to diff them
+          directly against each other.
+        </p>
         <ul style={{ listStyle: 'none', padding: 0 }}>
           {note.versions
             .slice()
             .sort((a, b) => b.revision - a.revision)
-            .map((v) => (
-              <li key={v.id} style={{ marginBottom: 6 }}>
-                <button
-                  onClick={() => setSelectedVersionId(v.id === selectedVersionId ? null : v.id)}
-                  aria-pressed={v.id === selectedVersionId}
-                  style={{
-                    background: v.id === selectedVersionId ? 'var(--lavender-50)' : 'transparent',
-                    border: v.id === selectedVersionId ? '1px solid var(--navy-700)' : '1px solid var(--border-subtle)',
-                    borderRadius: 6,
-                    padding: '8px 10px',
-                    width: '100%',
-                    textAlign: 'left',
-                    cursor: 'pointer',
-                  }}
-                >
-                  Revision {v.revision}
-                  {v.id === note.currentVersion.id && ' (current)'}
-                  <br />
-                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                    by {v.authoredBy.id} ({v.authoredBy.role})
-                  </span>
-                </button>
-              </li>
-            ))}
+            .map((v) => {
+              const checked = compareVersionIds.includes(v.id);
+              return (
+                <li key={v.id} style={{ marginBottom: 6 }}>
+                  <label
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      background: checked ? 'var(--lavender-50)' : 'transparent',
+                      border: checked ? '1px solid var(--navy-700)' : '1px solid var(--border-subtle)',
+                      borderRadius: 6,
+                      padding: '8px 10px',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleCompareVersion(v.id)}
+                      disabled={!checked && compareVersionIds.length >= 2}
+                    />
+                    <span>
+                      Revision {v.revision}
+                      {v.id === note.currentVersion.id && ' (current)'}
+                      <br />
+                      <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                        by {v.authoredBy.id} ({v.authoredBy.role})
+                      </span>
+                    </span>
+                  </label>
+                </li>
+              );
+            })}
         </ul>
 
-        {selectedVersionId && (
+        {compareVersionIds.length > 0 && (
           <div style={{ marginTop: 16 }}>
             <h4 style={{ fontSize: 15 }}>
-              Diff: revision {selectedVersion?.revision ?? '...'} → current (
-              {note.currentVersion.revision})
+              {compareVersionIds.length === 2
+                ? `Diff: revision ${compareA?.revision ?? '...'} → revision ${compareB?.revision ?? '...'}`
+                : `Diff: revision ${compareA?.revision ?? '...'} → your current edits`}
             </h4>
-            {isLoadingVersion && <p>Loading version...</p>}
-            {selectedVersion && (
+            {isLoadingCompareA || (compareVersionIds.length === 2 && isLoadingCompareB) ? (
+              <p>Loading version...</p>
+            ) : (
               <div style={{ fontSize: 13 }}>
                 {SECTION_KEYS.map((key) => (
                   <div key={key} style={{ marginBottom: 10 }}>
                     <strong>{key}</strong>
                     <DiffLine
-                      oldText={selectedVersion.content.sections[key]}
-                      newText={sections[key]}
+                      oldText={compareA?.content.sections[key] ?? ''}
+                      newText={
+                        compareVersionIds.length === 2
+                          ? compareB?.content.sections[key] ?? ''
+                          : sections[key]
+                      }
                     />
                   </div>
                 ))}
