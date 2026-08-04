@@ -4,10 +4,12 @@ import NoteDetailPage from './pages/NoteDetailPage';
 import { useCurrentUser, FAKE_USERS } from './auth/CurrentUserContext';
 import { OfflineBanner } from './components/OfflineBanner';
 import { useReplayOnReconnect } from './offline/useReplayOnReconnect';
+import { useFlushOnRouteChange } from './telemetry/useFlushOnRouteChange';
 
 function App() {
   const { currentUser, setCurrentUserId } = useCurrentUser();
   useReplayOnReconnect();
+  useFlushOnRouteChange();
 
   return (
     <div>

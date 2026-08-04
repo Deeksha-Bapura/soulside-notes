@@ -378,7 +378,7 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
       const maybeConflict = err as VersionConflict;
       if (maybeConflict?.error === 'version_conflict') {
         setConflict(maybeConflict);
-        track('version_conflict_detected', { noteId: note.id });
+        track('version_conflict_detected', { noteId: note.id }, { important: true });
         flushPendingSaveIfAny();
         return;
       }
