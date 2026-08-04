@@ -21,9 +21,6 @@ Run the state machine unit tests: `npm run test`
 
 ## Scope: what's built deeply vs. minimally vs. cut
 
-Per the assignment's "quality over quantity" guidance, I deliberately did not build every
-listed feature to the same depth.
-
 **Built fully:** state machine (fully guarded, unit tested), optimistic updates with
 rollback, notes list virtualization (tested to 500 seeded notes; the mechanism is
 count-independent, see Scale section), the 409 three-way conflict resolution UI, the
@@ -46,7 +43,6 @@ action).
 - Character-level diffing: word-level (see Concurrency section) covers the review need
 - Plugin architecture for other note types: SOAP only
 - PWA/installability, module federation
-- Visual polish: the spec explicitly says architecture is weighted over polish
 - Comprehensive multi-tab offline sync testing
 - Accessibility: see dedicated section below; this is the area I'd invest in next
 
