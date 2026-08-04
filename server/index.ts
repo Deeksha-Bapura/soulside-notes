@@ -2,9 +2,13 @@ import express from 'express';
 import cors from 'cors';
 import { notes, versions, events, seed, nextId, REVIEWERS } from './store';
 import { latencyAndFailureInjection } from './middleware';
-import type { NoteVersion, ReviewEvent } from '../src/domain/types';
+import type { NoteVersion, ReviewEvent, NoteStatus } from '../src/domain/types';
 import { createServer } from 'http';
 import { attachRealtime } from './realtime';
+import { createActor } from 'xstate';
+import { noteMachine, type NoteMachineEvent } from '../src/domain/noteMachine';
+import { approvedAtMap } from './store';
+
 
 const app = express();
 app.use(cors());
@@ -250,7 +254,12 @@ app.post('/api/notes/:id/versions', (req, res) => {
   res.json({ version: { id: newVersion.id, revision: newVersion.revision, parentVersionId: newVersion.parentVersionId } });
 });
 
-// --- POST /api/notes/:id/transitions : status changes ---
+// --- POST /api/notes/:id/transitions : status changes, SERVER-ENFORCED ---
+// The client sends the same event shape the frontend's XState machine
+// uses. We reconstruct a snapshot from the note's REAL current status and
+// context, and ask the SAME machine "would this be legal?" — a rogue
+// client calling this endpoint directly, bypassing the UI entirely,
+// cannot get further than a legitimate client would.
 app.post('/api/notes/:id/transitions', (req, res) => {
   const note = notes.get(req.params.id);
   if (!note) {
@@ -258,33 +267,70 @@ app.post('/api/notes/:id/transitions', (req, res) => {
     return;
   }
 
-  const { to, actorId, reason } = req.body ?? {};
+  const { event } = req.body as { event: NoteMachineEvent };
+  if (!event || !event.type) {
+    res.status(400).json({ error: 'invalid_request', message: 'event is required' });
+    return;
+  }
+
+  const snapshot = noteMachine.resolveState({
+    value: note.status as NoteStatus,
+    context: {
+      assignedReviewerId: note.assignedReviewerId,
+      approvedAt: approvedAtMap.get(note.id) ?? null,
+    },
+  });
+
+  if (!snapshot.can(event)) {
+    res.status(403).json({
+      error: 'forbidden',
+      message: 'This transition is not permitted given the current status, role, or ownership.',
+    });
+    return;
+  }
+
+  const actor = createActor(noteMachine, { snapshot });
+  actor.start();
+  actor.send(event);
+  const nextSnapshot = actor.getSnapshot();
+  actor.stop();
+  const toStatus = nextSnapshot.value as string;
   const fromStatus = note.status;
 
-  // NOTE: this endpoint intentionally does NOT re-implement the state
-  // machine's guard logic. The frontend's state machine is the single
-  // source of truth for what's *legal*; this dummy server just accepts
-  // the transition and records it, since real guard enforcement belongs
-  // server-side in a real system but is out of scope for a fake one.
-  note.status = to;
+  note.status = toStatus;
   note.updatedAt = new Date().toISOString();
-  if (to === 'IN_REVIEW') note.assignedReviewerId = actorId;
-  if (to === 'READY_FOR_REVIEW') note.assignedReviewerId = null;
 
-  const event: ReviewEvent = {
+  // Mirror the same side effects the machine's own entry actions imply,
+  // since we're applying the resulting state to our plain data store
+  // rather than keeping a live running actor server-side per note.
+  if (toStatus === 'IN_REVIEW' && 'actor' in event) {
+    note.assignedReviewerId = event.actor.id;
+  }
+  if (toStatus === 'READY_FOR_REVIEW') {
+    note.assignedReviewerId = null;
+  }
+  if (toStatus === 'APPROVED') {
+    approvedAtMap.set(note.id, Date.now());
+  }
+
+  const actorId = 'actor' in event ? event.actor.id : 'system';
+  const actorRole = 'actor' in event ? event.actor.role : 'CLINICIAN';
+  const reason = 'reason' in event ? event.reason : undefined;
+
+  const reviewEvent: ReviewEvent = {
     id: nextId('evt'),
     noteId: note.id,
     versionId: note.currentVersionId,
     fromStatus,
-    toStatus: to,
+    toStatus,
     actorId,
-    actorRole: 'REVIEWER',
+    actorRole,
     reason,
     occurredAt: note.updatedAt,
   };
-  events.set(event.id, event);
+  events.set(reviewEvent.id, reviewEvent);
 
-  res.json({ note: { id: note.id, status: note.status }, event });
+  res.json({ note: { id: note.id, status: note.status }, event: reviewEvent });
 });
 
 const PORT = 3001;

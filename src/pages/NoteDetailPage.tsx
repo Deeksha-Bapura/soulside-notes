@@ -328,16 +328,18 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
     onMutate: async (variables) => {
       await queryClient.cancelQueries({ queryKey: ['note', note.id] });
       const previousNote = queryClient.getQueryData<NoteDetail>(['note', note.id]);
+      const optimisticToStatus = EVENT_TO_STATUS[variables.event.type];
+      const actorId = 'actor' in variables.event ? variables.event.actor.id : currentUser.id;
 
       queryClient.setQueryData<NoteDetail>(['note', note.id], (old) => {
         if (!old) return old;
         return {
           ...old,
-          status: variables.to,
+          status: optimisticToStatus,
           assignedReviewer:
-            variables.to === 'IN_REVIEW'
-              ? { id: variables.actorId, displayName: variables.actorId, role: 'REVIEWER' }
-              : variables.to === 'READY_FOR_REVIEW'
+            optimisticToStatus === 'IN_REVIEW'
+              ? { id: actorId, displayName: actorId, role: 'REVIEWER' }
+              : optimisticToStatus === 'READY_FOR_REVIEW'
                 ? null
                 : old.assignedReviewer,
         };
@@ -346,7 +348,7 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
       return { previousNote };
     },
     onSuccess: (_result, variables) => {
-      setAnnouncement(`Note transitioned to ${variables.to}`);
+      setAnnouncement(`Note transitioned to ${EVENT_TO_STATUS[variables.event.type]}`);
     },
     onError: (err, _variables, context) => {
       if (context?.previousNote) {
@@ -675,9 +677,7 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
                     send(event);
                     transitionMutation.mutate({
                       noteId: note.id,
-                      to: EVENT_TO_STATUS[event.type],
-                      actorId: currentUser.id,
-                      reason: event.type === 'reject' ? rejectReason : undefined,
+                      event,
                     });
                     track('note_transition_attempted', {
                       noteId: note.id,

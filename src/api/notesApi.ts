@@ -106,19 +106,20 @@ export async function fetchNoteDetail(id: string): Promise<NoteDetail> {
   return res.json();
 }
 
+import type { NoteMachineEvent } from '../domain/noteMachine';
+
 export async function postTransition(params: {
   noteId: string;
-  to: string;
-  actorId: string;
-  reason?: string;
+  event: NoteMachineEvent;
 }) {
   const res = await fetch(`/api/notes/${params.noteId}/transitions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ to: params.to, actorId: params.actorId, reason: params.reason }),
+    body: JSON.stringify({ event: params.event }),
   });
   if (!res.ok) {
-    throw new Error(`Transition failed: ${res.status}`);
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.message || `Transition failed: ${res.status}`);
   }
   return res.json();
 }

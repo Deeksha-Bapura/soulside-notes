@@ -35,6 +35,12 @@ export const notes = new Map<string, Note>();
 export const versions = new Map<string, NoteVersion>();
 export const events = new Map<string, ReviewEvent>();
 
+// Tracks when a note entered APPROVED, needed by the shared state machine's
+// 24h amend-grace guard. Kept server-side only (not part of the shared
+// Note type) since it's transition-evaluation bookkeeping, not domain data
+// the frontend needs to display directly.
+export const approvedAtMap = new Map<string, number>();
+
 // Reviewer pool used by the simulation script (dr_a, dr_b, dr_c) plus a few extra.
 export const REVIEWERS = ['dr_a', 'dr_b', 'dr_c', 'dr_d'];
 
