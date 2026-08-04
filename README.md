@@ -46,7 +46,6 @@ action).
 - Character-level diffing: word-level (see Concurrency section) covers the review need
 - Plugin architecture for other note types: SOAP only
 - PWA/installability, module federation
-- Visual polish: the spec explicitly says architecture is weighted over polish
 - Comprehensive multi-tab offline sync testing
 - Accessibility: see dedicated section below; this is the area I'd invest in next
 
