@@ -360,6 +360,7 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
   const [sections, setSections] = useState<SoapSections>(note.currentVersion.content.sections);
   const [dirtySections, setDirtySections] = useState<Set<string>>(new Set());
   const baseVersionIdRef = useRef(note.currentVersion.id);
+  const pendingSaveContentRef = useRef<SoapSections | null>(null);
   const [conflict, setConflict] = useState<VersionConflict | null>(null);
 
   const saveMutation = useMutation({
@@ -371,12 +372,14 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
       clearQueuedWritesForNote(note.id).then(() => setPendingCount(0));
       useSyncStore.getState().clearConflict(note.id);
       queryClient.invalidateQueries({ queryKey: ['note', note.id] });
+      flushPendingSaveIfAny();
     },
     onError: async (err, variables) => {
       const maybeConflict = err as VersionConflict;
       if (maybeConflict?.error === 'version_conflict') {
         setConflict(maybeConflict);
         track('version_conflict_detected', { noteId: note.id });
+        flushPendingSaveIfAny();
         return;
       }
 
@@ -386,6 +389,7 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
           baseVersionIdRef.current = result.version.id;
           setDirtySections(new Set());
           queryClient.invalidateQueries({ queryKey: ['note', note.id] });
+          flushPendingSaveIfAny();
           return;
         } catch {
           // Retry also failed — fall through and queue it below.
@@ -401,11 +405,37 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
       });
       setPendingCount((c) => c + 1);
       track('write_queued_offline', { noteId: note.id });
+      flushPendingSaveIfAny();
     },
   });
 
+  // Fires exactly one follow-up save if content changed WHILE the just-
+  // finished save was in flight — this is the "coalesce in-flight saves"
+  // requirement: never two concurrent POSTs, but never silently drop an
+  // edit that happened during the wait either.
+  function flushPendingSaveIfAny() {
+    if (pendingSaveContentRef.current) {
+      const content = pendingSaveContentRef.current;
+      pendingSaveContentRef.current = null;
+      saveMutation.mutate({
+        noteId: note.id,
+        baseVersionId: baseVersionIdRef.current,
+        content: { sections: content },
+        clientMutationId: `${note.id}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      });
+    }
+  }
+
   const debouncedSave = useDebouncedCallback((newSections: SoapSections) => {
     if (conflict) return;
+
+    if (saveMutation.isPending) {
+      // A save is already in flight — don't fire a second concurrent
+      // POST. Remember the latest content; flushPendingSaveIfAny will
+      // send exactly one follow-up save once the in-flight one settles.
+      pendingSaveContentRef.current = newSections;
+      return;
+    }
 
     const payload = {
       noteId: note.id,

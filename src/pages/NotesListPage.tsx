@@ -6,6 +6,7 @@ import { fetchNotes, bulkAssignReviewer } from '../api/notesApi';
 import type { NoteStatus } from '../domain/types';
 import { useDebouncedCallback } from '../hooks/useDebouncedCallback';
 import { useCurrentUser, FAKE_USERS } from '../auth/CurrentUserContext';
+import { useVisibleNotesRealtime } from '../realtime/useVisibleNotesRealtime';
 
 const ROW_HEIGHT = 44;
 
@@ -201,6 +202,16 @@ export default function NotesListPage() {
     estimateSize: () => ROW_HEIGHT,
     overscan: 10,
   });
+
+  const visibleNoteIds = virtualizer
+    .getVirtualItems()
+    .map((item) => allNotes[item.index]?.id)
+    .filter((id): id is string => !!id);
+
+  useVisibleNotesRealtime(visibleNoteIds, [
+    'notes',
+    { status: activeStatuses, reviewer: activeReviewer, search: activeSearch, dateFrom, dateTo, sortBy, sortDir },
+  ]);
 
   useEffect(() => {
     const items = virtualizer.getVirtualItems();
