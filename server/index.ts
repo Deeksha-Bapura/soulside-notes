@@ -39,14 +39,53 @@ app.get('/api/notes', (req, res) => {
   const cursorParam = req.query.cursor as string | undefined;
   const statusParam = req.query.status as string | undefined;
   const statusFilter = statusParam ? statusParam.split(',') : null;
+  const reviewerParam = req.query.reviewer as string | undefined;
+  const searchParam = (req.query.search as string | undefined)?.trim().toLowerCase();
+  const dateFrom = req.query.dateFrom as string | undefined;
+  const dateTo = req.query.dateTo as string | undefined;
+  const sortBy = (req.query.sortBy as string) || 'updatedAt';
+  const sortDir = (req.query.sortDir as string) === 'asc' ? 1 : -1;
 
   let all = Array.from(notes.values());
+
   if (statusFilter && statusFilter.length > 0) {
     all = all.filter((note) => statusFilter.includes(note.status));
   }
+  if (reviewerParam) {
+    all = all.filter((note) => note.assignedReviewerId === reviewerParam);
+  }
+  if (dateFrom) {
+    all = all.filter((note) => note.updatedAt >= dateFrom);
+  }
+  if (dateTo) {
+    all = all.filter((note) => note.updatedAt <= dateTo);
+  }
+  if (searchParam) {
+    // Search across patient display name AND current version content —
+    // matches the spec's "search across patient name and note content."
+    all = all.filter((note) => {
+      if (note.patient.displayName.toLowerCase().includes(searchParam)) return true;
+      const version = versions.get(note.currentVersionId);
+      if (!version) return false;
+      const sections = version.content.sections;
+      return Object.values(sections).some((text) => text.toLowerCase().includes(searchParam));
+    });
+  }
+
+  // Stable secondary sort: whatever the primary sort field, ties always
+  // break on `id` so pagination never reorders rows between requests.
+  const sortFieldGetters: Record<string, (n: (typeof all)[number]) => string> = {
+    updatedAt: (n) => n.updatedAt,
+    createdAt: (n) => n.createdAt,
+    patientName: (n) => n.patient.displayName,
+    status: (n) => n.status,
+  };
+  const getSortField = sortFieldGetters[sortBy] ?? sortFieldGetters.updatedAt;
 
   all = all.sort((a, b) => {
-    if (a.updatedAt !== b.updatedAt) return b.updatedAt.localeCompare(a.updatedAt);
+    const fa = getSortField(a);
+    const fb = getSortField(b);
+    if (fa !== fb) return fa < fb ? -sortDir : sortDir;
     return a.id.localeCompare(b.id);
   });
 
@@ -82,6 +121,34 @@ app.get('/api/notes', (req, res) => {
     })),
     meta: { total: all.length, returned: page.length, generatedAt: new Date().toISOString() },
   });
+});
+
+// --- POST /api/notes/bulk-assign : bulk-assign a reviewer to multiple notes ---
+app.post('/api/notes/bulk-assign', (req, res) => {
+  const { noteIds, reviewerId } = req.body ?? {};
+  if (!Array.isArray(noteIds) || !reviewerId) {
+    res.status(400).json({ error: 'noteIds and reviewerId are required' });
+    return;
+  }
+
+  const updated: string[] = [];
+  const skipped: string[] = [];
+
+  for (const noteId of noteIds) {
+    const note = notes.get(noteId);
+    // Only meaningful for notes actually awaiting review — bulk-assigning
+    // a LOCKED or GENERATING note doesn't make sense, so we skip those
+    // rather than silently corrupting state.
+    if (note && note.status === 'READY_FOR_REVIEW') {
+      note.assignedReviewerId = reviewerId;
+      note.updatedAt = new Date().toISOString();
+      updated.push(noteId);
+    } else {
+      skipped.push(noteId);
+    }
+  }
+
+  res.json({ updated, skipped });
 });
 
 // --- GET /api/notes/:id : full detail ---

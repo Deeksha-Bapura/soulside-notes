@@ -23,6 +23,12 @@ export async function fetchNotes(params: {
   cursor?: string | null;
   limit?: number;
   status?: string[];
+  reviewer?: string;
+  search?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  sortBy?: string;
+  sortDir?: 'asc' | 'desc';
 }): Promise<NoteListResponse> {
   const search = new URLSearchParams();
   if (params.cursor) search.set('cursor', params.cursor);
@@ -30,10 +36,31 @@ export async function fetchNotes(params: {
   if (params.status && params.status.length > 0) {
     search.set('status', params.status.join(','));
   }
+  if (params.reviewer) search.set('reviewer', params.reviewer);
+  if (params.search) search.set('search', params.search);
+  if (params.dateFrom) search.set('dateFrom', params.dateFrom);
+  if (params.dateTo) search.set('dateTo', params.dateTo);
+  if (params.sortBy) search.set('sortBy', params.sortBy);
+  if (params.sortDir) search.set('sortDir', params.sortDir);
 
   const res = await fetch(`/api/notes?${search.toString()}`);
   if (!res.ok) {
     throw new Error(`Failed to fetch notes: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function bulkAssignReviewer(params: {
+  noteIds: string[];
+  reviewerId: string;
+}): Promise<{ updated: string[]; skipped: string[] }> {
+  const res = await fetch('/api/notes/bulk-assign', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) {
+    throw new Error(`Bulk assign failed: ${res.status}`);
   }
   return res.json();
 }
