@@ -7,6 +7,7 @@ import type { NoteStatus } from '../domain/types';
 import { useDebouncedCallback } from '../hooks/useDebouncedCallback';
 import { useCurrentUser, FAKE_USERS } from '../auth/CurrentUserContext';
 import { useVisibleNotesRealtime } from '../realtime/useVisibleNotesRealtime';
+import { canPerformBulkActions } from '../auth/permissions';
 
 const ROW_HEIGHT = 44;
 
@@ -74,6 +75,7 @@ const REVIEWERS = ['dr_a', 'dr_b', 'dr_c', 'dr_d'];
 export default function NotesListPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { currentUser } = useCurrentUser();
+  const canBulkAssign = canPerformBulkActions(currentUser.role);
   const queryClient = useQueryClient();
 
   const activeStatuses = useMemo(() => {
@@ -445,12 +447,14 @@ export default function NotesListPage() {
                     <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>Loading more...</span>
                   ) : (
                     <>
-                      <input
-                        type="checkbox"
-                        checked={selectedIds.has(note.id)}
-                        onChange={() => toggleSelect(note.id)}
-                        onClick={(e) => e.stopPropagation()}
-                      />
+                      {canBulkAssign && (
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.has(note.id)}
+                          onChange={() => toggleSelect(note.id)}
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      )}
                       <Link
                         to={`/notes/${note.id}`}
                         style={{

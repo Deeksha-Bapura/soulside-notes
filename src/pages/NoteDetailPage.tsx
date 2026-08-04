@@ -21,6 +21,7 @@ import { replayQueuedWrites } from '../offline/replay';
 import { useSyncStore } from '../offline/syncStore';
 import { useNoteRealtime } from '../realtime/useNoteRealtime';
 import { track } from '../telemetry/track';
+import { canEditNoteContent } from '../auth/permissions';
 
 export default function NoteDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -280,6 +281,7 @@ function ConflictResolutionPanel({
 
 function NoteDetailView({ note }: { note: NoteDetail }) {
   const { currentUser } = useCurrentUser();
+  const canEdit = canEditNoteContent(currentUser.role);
   const [rejectReason, setRejectReason] = useState('');
   const queryClient = useQueryClient();
   const isOnline = useOnlineStatus();
@@ -750,6 +752,11 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
         )}
 
         <h2 style={{ fontSize: 22 }}>Current version (revision {note.currentVersion.revision})</h2>
+        {!canEdit && (
+          <p style={{ fontSize: 13, color: 'var(--text-muted)', fontStyle: 'italic' }}>
+            You have read-only access to this note (role: {currentUser.role}).
+          </p>
+        )}
         {SECTION_KEYS.map((key) => (
           <div key={key} style={{ marginBottom: 16 }}>
             <label htmlFor={`section-${key}`} style={{ display: 'block', marginBottom: 4 }}>
@@ -774,7 +781,7 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
               value={sections[key]}
               onChange={(e) => handleSectionChange(key, e.target.value)}
               rows={2}
-              disabled={!!conflict || isLocked}
+              disabled={!!conflict || isLocked || !canEdit}
               style={{
                 width: '100%',
                 maxWidth: 640,
