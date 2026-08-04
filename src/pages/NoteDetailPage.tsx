@@ -31,8 +31,8 @@ export default function NoteDetailPage() {
     enabled: !!id,
   });
 
-  if (isLoading) return <div style={{ padding: 20 }}>Loading note...</div>;
-  if (error) return <div style={{ padding: 20 }}>Error: {(error as Error).message}</div>;
+  if (isLoading) return <div style={{ padding: 24 }}>Loading note...</div>;
+  if (error) return <div style={{ padding: 24 }}>Error: {(error as Error).message}</div>;
   if (!data) return null;
 
   return <NoteDetailView key={data.id} note={data} />;
@@ -50,9 +50,36 @@ const EVENT_TO_STATUS: Record<string, string> = {
 type SoapSections = { S: string; O: string; A: string; P: string };
 const SECTION_KEYS = ['S', 'O', 'A', 'P'] as const;
 
-// Visually hidden but still readable by screen readers — the standard
-// "sr-only" pattern. display:none would hide it from screen readers too,
-// which is why this uses clipping/1px sizing instead.
+const STATUS_COLORS: Record<string, { bg: string; text: string }> = {
+  GENERATING: { bg: '#f0f0fd', text: '#4a4a8a' },
+  READY_FOR_REVIEW: { bg: '#fff8e1', text: '#a87a00' },
+  IN_REVIEW: { bg: '#e8f0fe', text: '#1a4a8a' },
+  APPROVED: { bg: '#e3f7e3', text: '#1a6b1a' },
+  REJECTED: { bg: '#fdeaea', text: '#a02020' },
+  AMENDED: { bg: '#f0f0fd', text: '#4a4a8a' },
+  LOCKED: { bg: '#f0f0f0', text: '#555' },
+  FAILED: { bg: '#fdeaea', text: '#a02020' },
+};
+
+function StatusBadge({ status }: { status: string }) {
+  const colors = STATUS_COLORS[status] ?? { bg: '#eee', text: '#555' };
+  return (
+    <span
+      style={{
+        background: colors.bg,
+        color: colors.text,
+        fontSize: 13,
+        fontWeight: 600,
+        padding: '4px 12px',
+        borderRadius: 999,
+        letterSpacing: 0.3,
+      }}
+    >
+      {status.replace(/_/g, ' ')}
+    </span>
+  );
+}
+
 const visuallyHiddenStyle: React.CSSProperties = {
   position: 'absolute',
   width: 1,
@@ -114,6 +141,7 @@ function ConflictResolutionPanel({
     A: 'mine',
     P: 'mine',
   });
+
   const headingRef = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {
@@ -141,18 +169,18 @@ function ConflictResolutionPanel({
       role="dialog"
       aria-labelledby="conflict-panel-heading"
       style={{
-        background: '#fff8e1',
-        border: '2px solid #c90',
-        borderRadius: 6,
-        padding: 16,
-        marginBottom: 16,
+        background: 'var(--warning-bg)',
+        border: '2px solid var(--warning-border)',
+        borderRadius: 8,
+        padding: 20,
+        marginBottom: 20,
       }}
     >
       <h3 id="conflict-panel-heading" ref={headingRef} tabIndex={-1} style={{ marginTop: 0 }}>
         Save conflict — revision {theirs.revision} was saved by {theirs.authorId} while you
         were editing
       </h3>
-      <p style={{ fontSize: 13, color: '#664' }}>
+      <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
         Pick which version to keep for each section. Sections without an overlapping edit are
         usually safe to auto-merge; anything both of you touched needs a manual choice.
       </p>
@@ -168,30 +196,33 @@ function ConflictResolutionPanel({
             key={key}
             style={{
               marginBottom: 16,
-              padding: 10,
+              padding: 12,
               background: '#fff',
-              border: bothChangedSameSection ? '1px solid #c66' : '1px solid #ddd',
-              borderRadius: 4,
+              border: bothChangedSameSection ? '1px solid #c66' : '1px solid var(--border-subtle)',
+              borderRadius: 6,
             }}
           >
             <strong>
               {key}
               {bothChangedSameSection && (
-                <span style={{ color: '#c00', fontSize: 12 }}> — both edited this section</span>
+                <span style={{ color: 'var(--danger-text)', fontSize: 12 }}>
+                  {' '}
+                  — both edited this section
+                </span>
               )}
             </strong>
 
-            <div style={{ fontSize: 12, color: '#888', marginTop: 6 }}>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>
               Your changes (vs. common ancestor):
             </div>
             <DiffLine oldText={ancestorText} newText={mineText} />
 
-            <div style={{ fontSize: 12, color: '#888', marginTop: 6 }}>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>
               Their changes (vs. common ancestor):
             </div>
             <DiffLine oldText={ancestorText} newText={theirsText} />
 
-            <div style={{ marginTop: 6 }}>
+            <div style={{ marginTop: 8 }}>
               <label style={{ marginRight: 16 }}>
                 <input
                   type="radio"
@@ -215,11 +246,32 @@ function ConflictResolutionPanel({
         );
       })}
 
-      <div style={{ display: 'flex', gap: 8 }}>
-        <button onClick={() => onResolve(resolvedSections, theirs.id)}>
+      <div style={{ display: 'flex', gap: 10 }}>
+        <button
+          onClick={() => onResolve(resolvedSections, theirs.id)}
+          style={{
+            background: 'var(--navy-900)',
+            color: '#fff',
+            border: 'none',
+            borderRadius: 6,
+            padding: '8px 16px',
+            fontWeight: 600,
+          }}
+        >
           Save merged version
         </button>
-        <button onClick={onCancel}>Cancel (discard my unsaved changes)</button>
+        <button
+          onClick={onCancel}
+          style={{
+            background: '#fff',
+            color: 'var(--text-primary)',
+            border: '1px solid var(--border-subtle)',
+            borderRadius: 6,
+            padding: '8px 16px',
+          }}
+        >
+          Cancel (discard my unsaved changes)
+        </button>
       </div>
     </div>
   );
@@ -260,9 +312,6 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
     }
   }, [note.id, isOnline, queryClient]);
 
-  // Screen-reader announcement for status changes pushed by someone else
-  // in real time — this is the one case where the UI updates without any
-  // action from the current user, so it needs an explicit announcement.
   useEffect(() => {
     if (lastRemoteChange) {
       setAnnouncement(
@@ -294,9 +343,6 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
       return { previousNote };
     },
     onSuccess: (_result, variables) => {
-      // Announce our own successful action too, not just remote pushes —
-      // a screen reader user gets no other confirmation that their click
-      // actually took effect beyond the visual status text changing.
       setAnnouncement(`Note transitioned to ${variables.to}`);
     },
     onError: (err, _variables, context) => {
@@ -427,6 +473,7 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
     label: string;
     event: NoteMachineEvent;
     reasonIfDisabled: string;
+    primary?: boolean;
   }> = [
     {
       label: 'Start review',
@@ -435,6 +482,7 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
         currentUser.role !== 'REVIEWER'
           ? `Only reviewers can start a review (you are ${currentUser.role})`
           : 'Not available in the current state',
+      primary: true,
     },
     {
       label: 'Return to queue',
@@ -451,6 +499,7 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
         note.assignedReviewer?.id !== currentUser.id
           ? 'Only the assigned reviewer can approve'
           : 'Not available in the current state',
+      primary: true,
     },
     {
       label: 'Reject',
@@ -483,40 +532,61 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
   const noteHasUnresolvedConflict = conflictedNoteIds.includes(note.id);
 
   return (
-    <div style={{ padding: 20, display: 'flex', gap: 24 }}>
+    <div style={{ padding: 24, display: 'flex', gap: 28, maxWidth: 1200, margin: '0 auto' }}>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div role="status" aria-live="polite" style={visuallyHiddenStyle}>
           {announcement}
         </div>
 
-        <Link to="/">&larr; Back to notes</Link>
-        <h1>{note.patient.displayName}</h1>
-        <p>
-          Status: <strong>{note.status}</strong>
-          {note.assignedReviewer && ` — assigned to ${note.assignedReviewer.displayName}`}
-        </p>
+        <Link to="/" style={{ fontSize: 13 }}>&larr; Back to notes</Link>
+        <h1 style={{ fontSize: 30, marginTop: 8 }}>{note.patient.displayName}</h1>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+          <StatusBadge status={note.status} />
+          {note.assignedReviewer && (
+            <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+              assigned to {note.assignedReviewer.displayName}
+            </span>
+          )}
+        </div>
 
         {viewers.length > 1 && (
-          <p style={{ fontSize: 12, color: '#666' }}>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
             👀 Also viewing: {viewers.filter((v) => v.id).map((v) => v.id).join(', ')}
           </p>
         )}
 
         {pendingCount > 0 && (
-          <p style={{ background: '#eef', padding: 8, fontSize: 13 }}>
+          <p
+            style={{
+              background: 'var(--lavender-50)',
+              color: 'var(--navy-700)',
+              padding: '8px 12px',
+              borderRadius: 6,
+              fontSize: 13,
+            }}
+          >
             {pendingCount} change{pendingCount > 1 ? 's' : ''} waiting to sync
             {!isOnline && ' (offline)'}.
           </p>
         )}
         {noteHasUnresolvedConflict && (
-          <p style={{ background: '#fee', padding: 8, fontSize: 13, color: '#a00' }}>
+          <p
+            style={{
+              background: 'var(--danger-bg)',
+              color: 'var(--danger-text)',
+              padding: '8px 12px',
+              borderRadius: 6,
+              fontSize: 13,
+            }}
+          >
             A queued change to this note conflicted with a newer version. Edit the section below
             to trigger conflict resolution.
           </p>
         )}
 
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
-          {actions.map(({ label, event, reasonIfDisabled }) => {
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', margin: '16px 0' }}>
+          {actions.map(({ label, event, reasonIfDisabled, primary }) => {
             const enabled = state.can(event);
             const reasonId = `reason-${label.replace(/\s+/g, '-').toLowerCase()}`;
             return (
@@ -539,12 +609,29 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
                       toStatus: EVENT_TO_STATUS[event.type],
                     });
                   }}
-                  style={{ opacity: enabled ? 1 : 0.5 }}
+                  style={{
+                    padding: '9px 18px',
+                    borderRadius: 6,
+                    fontWeight: 600,
+                    fontSize: 13,
+                    border: enabled
+                      ? primary
+                        ? 'none'
+                        : '1px solid var(--navy-900)'
+                      : '1px solid var(--border-subtle)',
+                    background: enabled ? (primary ? 'var(--amber-500)' : '#fff') : '#f5f5f5',
+                    color: enabled ? (primary ? 'var(--navy-900)' : 'var(--navy-900)') : '#aaa',
+                    cursor: enabled ? 'pointer' : 'not-allowed',
+                    transition: 'all 0.15s ease',
+                  }}
                 >
                   {label}
                 </button>
                 {!enabled && (
-                  <div id={reasonId} style={{ fontSize: 11, color: '#a00', maxWidth: 140 }}>
+                  <div
+                    id={reasonId}
+                    style={{ fontSize: 11, color: 'var(--danger-text)', maxWidth: 150, marginTop: 4 }}
+                  >
                     {reasonIfDisabled}
                   </div>
                 )}
@@ -554,11 +641,11 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
         </div>
 
         {transitionMutation.isPending && (
-          <p style={{ fontSize: 12, color: '#888' }}>Saving...</p>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>Saving...</p>
         )}
 
-        <div style={{ marginBottom: 16 }}>
-          <label htmlFor="reject-reason-input">
+        <div style={{ marginBottom: 20 }}>
+          <label htmlFor="reject-reason-input" style={{ fontSize: 13 }}>
             Reject reason:{' '}
             <input
               id="reject-reason-input"
@@ -566,6 +653,14 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
               value={rejectReason}
               onChange={(e) => setRejectReason(e.target.value)}
               placeholder="required to reject"
+              style={{
+                padding: '6px 10px',
+                borderRadius: 6,
+                border: '1px solid var(--border-subtle)',
+                fontFamily: 'Poppins, sans-serif',
+                fontSize: 13,
+                width: 260,
+              }}
             />
           </label>
         </div>
@@ -579,16 +674,25 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
           />
         )}
 
-        <h2>Current version (revision {note.currentVersion.revision})</h2>
+        <h2 style={{ fontSize: 22 }}>Current version (revision {note.currentVersion.revision})</h2>
         {SECTION_KEYS.map((key) => (
-          <div key={key} style={{ marginBottom: 12 }}>
-            <label htmlFor={`section-${key}`}>
-              <strong>
+          <div key={key} style={{ marginBottom: 16 }}>
+            <label htmlFor={`section-${key}`} style={{ display: 'block', marginBottom: 4 }}>
+              <span
+                style={{
+                  fontFamily: "'Cormorant Garamond', serif",
+                  fontWeight: 600,
+                  fontSize: 16,
+                  color: 'var(--navy-900)',
+                }}
+              >
                 {key}
-                {dirtySections.has(key) && (
-                  <span style={{ color: '#a80', fontSize: 12 }}> (unsaved)</span>
-                )}
-              </strong>
+              </span>
+              {dirtySections.has(key) && (
+                <span style={{ color: 'var(--amber-700)', fontSize: 12, marginLeft: 6 }}>
+                  ● unsaved
+                </span>
+              )}
             </label>
             <textarea
               id={`section-${key}`}
@@ -596,13 +700,27 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
               onChange={(e) => handleSectionChange(key, e.target.value)}
               rows={2}
               disabled={!!conflict}
-              style={{ width: '100%', maxWidth: 600, display: 'block', marginTop: 4 }}
+              style={{
+                width: '100%',
+                maxWidth: 640,
+                display: 'block',
+                padding: '10px 12px',
+                borderRadius: 6,
+                border: dirtySections.has(key)
+                  ? '1px solid var(--amber-700)'
+                  : '1px solid var(--border-subtle)',
+                fontFamily: "'Poppins', sans-serif",
+                fontSize: 14,
+                resize: 'vertical',
+                outline: 'none',
+                background: conflict ? '#f5f5f5' : '#fff',
+              }}
             />
           </div>
         ))}
-        {saveMutation.isPending && <p style={{ fontSize: 12, color: '#888' }}>Saving version...</p>}
+        {saveMutation.isPending && <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>Saving version...</p>}
 
-        <h3>Review history</h3>
+        <h3 style={{ fontSize: 18 }}>Review history</h3>
         <ul>
           {note.review.events.map((event) => (
             <li key={event.id}>
@@ -614,8 +732,8 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
         </ul>
       </div>
 
-      <div style={{ width: 320, flexShrink: 0, borderLeft: '1px solid #ddd', paddingLeft: 20 }}>
-        <h3>Version history</h3>
+      <div style={{ width: 320, flexShrink: 0, borderLeft: '1px solid var(--border-subtle)', paddingLeft: 24 }}>
+        <h3 style={{ fontSize: 18 }}>Version history</h3>
         <ul style={{ listStyle: 'none', padding: 0 }}>
           {note.versions
             .slice()
@@ -626,9 +744,10 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
                   onClick={() => setSelectedVersionId(v.id === selectedVersionId ? null : v.id)}
                   aria-pressed={v.id === selectedVersionId}
                   style={{
-                    background: v.id === selectedVersionId ? '#eef' : 'transparent',
-                    border: '1px solid #ccc',
-                    padding: '4px 8px',
+                    background: v.id === selectedVersionId ? 'var(--lavender-50)' : 'transparent',
+                    border: v.id === selectedVersionId ? '1px solid var(--navy-700)' : '1px solid var(--border-subtle)',
+                    borderRadius: 6,
+                    padding: '8px 10px',
                     width: '100%',
                     textAlign: 'left',
                     cursor: 'pointer',
@@ -637,7 +756,7 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
                   Revision {v.revision}
                   {v.id === note.currentVersion.id && ' (current)'}
                   <br />
-                  <span style={{ fontSize: 11, color: '#666' }}>
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
                     by {v.authoredBy.id} ({v.authoredBy.role})
                   </span>
                 </button>
@@ -647,7 +766,7 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
 
         {selectedVersionId && (
           <div style={{ marginTop: 16 }}>
-            <h4>
+            <h4 style={{ fontSize: 15 }}>
               Diff: revision {selectedVersion?.revision ?? '...'} → current (
               {note.currentVersion.revision})
             </h4>

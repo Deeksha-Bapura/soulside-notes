@@ -12,18 +12,38 @@ function App() {
   return (
     <div>
       <OfflineBanner />
-      <div style={{ padding: '8px 20px', background: '#f4f4f4', borderBottom: '1px solid #ddd' }}>
-        Acting as:{' '}
-        <select
-          value={currentUser.id}
-          onChange={(e) => setCurrentUserId(e.target.value)}
-        >
-          {FAKE_USERS.map((u) => (
-            <option key={u.id} value={u.id}>
-              {u.displayName} ({u.role})
-            </option>
-          ))}
-        </select>
+      <div
+        style={{
+          padding: '12px 24px',
+          background: 'var(--navy-900)',
+          color: '#fff',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+        }}
+      >
+        <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 20, fontWeight: 600 }}>
+          soulside <span style={{ color: 'var(--amber-500)' }}>notes</span>
+        </span>
+        <label style={{ fontSize: 13 }}>
+          Acting as:{' '}
+          <select
+            value={currentUser.id}
+            onChange={(e) => setCurrentUserId(e.target.value)}
+            style={{
+              padding: '4px 8px',
+              borderRadius: 4,
+              border: 'none',
+              fontFamily: "'Poppins', sans-serif",
+            }}
+          >
+            {FAKE_USERS.map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.displayName} ({u.role})
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
       <Routes>
         <Route path="/" element={<NotesListPage />} />

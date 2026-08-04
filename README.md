@@ -50,6 +50,15 @@ action).
 - Comprehensive multi-tab offline sync testing
 - Accessibility — see dedicated section below; this is the area I'd invest in next
 
+## Visual design
+
+A light styling pass was added referencing Soulside's actual brand palette (navy
+`#1a1a35`, amber `#fcb613`, lavender `#f0f0fd`, Cormorant Garamond for headings) —
+implemented via CSS custom properties as design tokens rather than one-off hex values,
+so the palette is centrally adjustable. This was a deliberate late addition on top of
+already-complete, already-tested functionality — per the assignment's own framing,
+visual polish was never the priority, and no functional logic changed during this pass.
+
 ---
 
 ## Design decisions
