@@ -7,6 +7,7 @@ type NoteEvent =
       actor: { id: string; displayName: string };
       at: string;
       eventId: string;
+      seq?: number;
     }
   | { type: 'note.presence'; noteId: string; viewers: Array<{ id: string; role: string }> };
 
@@ -15,8 +16,12 @@ type Listener = (event: NoteEvent) => void;
 /**
  * A single shared WebSocket connection for the whole app, with per-note
  * pub/sub layered on top. Handles:
- * - Reconnection with exponential backoff if the connection drops
- * - Re-subscribing to everything we cared about after a reconnect
+ * - Reconnection with exponential backoff + jitter, so many simultaneously
+ *   disconnected clients don't all retry at the exact same moment
+ *   ("thundering herd").
+ * - Re-subscribing to everything we cared about after a reconnect, AND
+ *   requesting replay of anything broadcast during the disconnected gap
+ *   (rather than assuming nothing happened while we were offline).
  * - Deduplicating events by eventId (the server deliberately sends ~2%
  *   duplicates, per Step 5 — this is where we handle that on purpose,
  *   rather than treating duplicate UI updates as a bug)
@@ -27,6 +32,7 @@ class RealtimeClient {
   private seenEventIds = new Set<string>();
   private reconnectAttempt = 0;
   private subscribedNoteIds = new Set<string>();
+  private lastSeenSeq = 0;
 
   connect() {
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
@@ -40,11 +46,19 @@ class RealtimeClient {
       if (this.subscribedNoteIds.size > 0) {
         this.send({ type: 'subscribe', noteIds: Array.from(this.subscribedNoteIds) });
       }
+      // Ask the server for anything we missed while disconnected, rather
+      // than silently assuming the gap was empty.
+      if (this.lastSeenSeq > 0) {
+        this.send({ type: 'replay_since', sinceSeq: this.lastSeenSeq });
+      }
     };
 
     this.ws.onmessage = (event) => {
       try {
-        const data = JSON.parse(event.data) as NoteEvent & { eventId?: string };
+        const data = JSON.parse(event.data) as NoteEvent & { eventId?: string; seq?: number };
+        if (typeof data.seq === 'number') {
+          this.lastSeenSeq = Math.max(this.lastSeenSeq, data.seq);
+        }
         if ('eventId' in data && data.eventId) {
           if (this.seenEventIds.has(data.eventId)) return; // drop duplicate
           this.seenEventIds.add(data.eventId);
@@ -55,18 +69,21 @@ class RealtimeClient {
         }
         const noteListeners = this.listeners.get(data.noteId);
         noteListeners?.forEach((cb) => cb(data));
-      } catch (e) {
+      } catch {
+        // Malformed message — ignore rather than crash the socket handler.
       }
-    };
-
-    this.ws.onerror = (err) => {
     };
 
     this.ws.onclose = () => {
       this.ws = null;
-      const delay = Math.min(1000 * 2 ** this.reconnectAttempt, 15000);
+      const baseDelay = Math.min(1000 * 2 ** this.reconnectAttempt, 15000);
+      // Full jitter: a random delay anywhere from 0 up to baseDelay,
+      // rather than a fixed exponential value — spreads out reconnection
+      // attempts across many clients instead of them all retrying in
+      // lockstep after the same outage.
+      const jitteredDelay = Math.random() * baseDelay;
       this.reconnectAttempt++;
-      setTimeout(() => this.connect(), delay);
+      setTimeout(() => this.connect(), jitteredDelay);
     };
   }
 

@@ -29,6 +29,28 @@ function nextEventId() {
   return `evt_rt_${eventCounter}`;
 }
 
+// Short in-memory buffer of recently broadcast events, keyed by sequence
+// number, so a client that reconnects after a gap can ask "what did I
+// miss since sequence N" rather than silently losing events. Bounded to
+// avoid unbounded memory growth in a long-running dummy server.
+interface BufferedEvent {
+  seq: number;
+  noteId: string;
+  payload: unknown;
+}
+const recentEvents: BufferedEvent[] = [];
+const MAX_BUFFERED_EVENTS = 500;
+
+function recordEvent(noteId: string, payload: unknown) {
+  eventCounter += 1;
+  const payloadWithSeq = { ...(payload as object), seq: eventCounter };
+  recentEvents.push({ seq: eventCounter, noteId, payload: payloadWithSeq });
+  if (recentEvents.length > MAX_BUFFERED_EVENTS) {
+    recentEvents.shift();
+  }
+  return eventCounter;
+}
+
 export function attachRealtime(server: Server) {
   const wss = new WebSocketServer({ server, path: '/ws' });
   const clients = new Set<ClientState>();
@@ -52,6 +74,16 @@ export function attachRealtime(server: Server) {
           msg.noteIds.forEach((id: string) => client.subscribedNoteIds.delete(id));
           broadcastPresence(msg.noteIds);
         }
+        // Client reconnecting after a gap: replay anything buffered for
+        // its currently-subscribed notes since the sequence it last saw.
+        if (msg.type === 'replay_since' && typeof msg.sinceSeq === 'number') {
+          const missed = recentEvents.filter(
+            (e) => e.seq > msg.sinceSeq && client.subscribedNoteIds.has(e.noteId)
+          );
+          for (const e of missed) {
+            send(client, e.payload);
+          }
+        }
       } catch {
         // Ignore malformed messages — a dummy backend doesn't need to be robust here.
       }
@@ -71,11 +103,12 @@ export function attachRealtime(server: Server) {
   }
 
   function broadcastToSubscribers(noteId: string, payload: unknown) {
+    const seq = recordEvent(noteId, payload);
+    const payloadWithSeq = { ...(payload as object), seq };
     for (const client of clients) {
       if (client.subscribedNoteIds.has(noteId)) {
-        send(client, payload);
-        // ~2% duplicate delivery, on purpose — exercises at-least-once handling.
-        if (Math.random() < 0.02) send(client, payload);
+        send(client, payloadWithSeq);
+        if (Math.random() < 0.02) send(client, payloadWithSeq);
       }
     }
   }
