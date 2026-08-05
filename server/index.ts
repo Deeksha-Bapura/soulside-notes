@@ -11,6 +11,7 @@ import { approvedAtMap } from './store';
 
 
 const app = express();
+let realtimeApi: ReturnType<typeof attachRealtime> | undefined;
 app.use(cors());
 app.use(express.json());
 
@@ -251,6 +252,11 @@ app.post('/api/notes/:id/versions', (req, res) => {
 
   if (clientMutationId) seenMutationIds.add(clientMutationId);
 
+  realtimeApi?.broadcastVersionAdded(note.id, {
+    id: newVersion.id,
+    revision: newVersion.revision,
+  });
+
   res.json({ version: { id: newVersion.id, revision: newVersion.revision, parentVersionId: newVersion.parentVersionId } });
 });
 
@@ -330,12 +336,17 @@ app.post('/api/notes/:id/transitions', (req, res) => {
   };
   events.set(reviewEvent.id, reviewEvent);
 
+  realtimeApi?.broadcastStatusChanged(note.id, fromStatus, toStatus, {
+    id: actorId,
+    displayName: actorId,
+  });
+
   res.json({ note: { id: note.id, status: note.status }, event: reviewEvent });
 });
 
 const PORT = 3001;
 const httpServer = createServer(app);
-attachRealtime(httpServer);
+realtimeApi = attachRealtime(httpServer);
 
 httpServer.listen(PORT, () => {
   console.log(`Dummy backend listening on http://localhost:${PORT}`);

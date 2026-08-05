@@ -143,7 +143,7 @@ export function attachRealtime(server: Server) {
     if (!note) return;
 
 
-    if (note.status === 'IN_REVIEW' && Math.random() < 0.3) {
+    if (note.status === 'IN_REVIEW' && Math.random() < 0) {
       const fromStatus = note.status;
       note.status = 'APPROVED';
       note.updatedAt = new Date().toISOString();
@@ -160,4 +160,31 @@ export function attachRealtime(server: Server) {
   }, 4000);
 
   console.log('Real-time WebSocket channel attached at /ws');
+
+  return {
+    broadcastVersionAdded(noteId: string, version: { id: string; revision: number }) {
+      broadcastToSubscribers(noteId, {
+        type: 'note.version_added',
+        noteId,
+        version,
+        eventId: nextEventId(),
+      });
+    },
+    broadcastStatusChanged(
+      noteId: string,
+      fromStatus: string,
+      toStatus: string,
+      actor: { id: string; displayName: string }
+    ) {
+      broadcastToSubscribers(noteId, {
+        type: 'note.status_changed',
+        noteId,
+        fromStatus,
+        toStatus,
+        actor,
+        at: new Date().toISOString(),
+        eventId: nextEventId(),
+      });
+    },
+  };
 }

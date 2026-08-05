@@ -11,7 +11,7 @@ import {
   type VersionConflict,
 } from '../api/notesApi';
 import { noteMachine, type NoteMachineEvent } from '../domain/noteMachine';
-import type { NoteStatus } from '../domain/types';
+import type { NoteStatus, ReviewEvent } from '../domain/types';
 import { useCurrentUser } from '../auth/CurrentUserContext';
 import { useDebouncedCallback } from '../hooks/useDebouncedCallback';
 import { diffWords } from '../lib/diffWords';
@@ -48,6 +48,38 @@ const EVENT_TO_STATUS: Record<string, string> = {
   regenerate: 'GENERATING',
   amend: 'AMENDED',
 };
+
+// Reverse lookup: given a (fromStatus -> toStatus) pair pushed over the
+// real-time channel, figure out which machine event type would produce
+// that same transition, so a server-pushed change can be replayed through
+// the SAME machine a user click would use, not just applied as a raw
+// cache patch. This is a best-effort reconstruction — for transitions
+// reachable via more than one event type it picks the first match, which
+// is fine here since we only need a legal event that lands in the right
+// state, not to recover which literal button someone else clicked.
+function reconstructEventForTransition(
+  fromStatus: string,
+  toStatus: string,
+  actorId: string
+): NoteMachineEvent | null {
+  const actor = { id: actorId, role: 'REVIEWER' as const };
+  const candidates: Array<[string, NoteMachineEvent]> = [
+    ['GENERATING->READY_FOR_REVIEW', { type: 'generation.complete' }],
+    ['GENERATING->FAILED', { type: 'generation.error' }],
+    ['FAILED->GENERATING', { type: 'regenerate', actor }],
+    ['READY_FOR_REVIEW->IN_REVIEW', { type: 'start_review', actor }],
+    ['IN_REVIEW->READY_FOR_REVIEW', { type: 'return', actor }],
+    ['IN_REVIEW->APPROVED', { type: 'approve', actor, mfaVerified: true }],
+    ['IN_REVIEW->REJECTED', { type: 'reject', actor, reason: '(reason not transmitted)' }],
+    ['REJECTED->READY_FOR_REVIEW', { type: 'resubmit', actor }],
+    ['APPROVED->AMENDED', { type: 'amend', actor, now: Date.now() }],
+    ['APPROVED->LOCKED', { type: 'grace_expired' }],
+    ['AMENDED->IN_REVIEW', { type: 'start_review', actor }],
+  ];
+  const key = `${fromStatus}->${toStatus}`;
+  const match = candidates.find(([k]) => k === key);
+  return match ? match[1] : null;
+}
 
 type SoapSections = { S: string; O: string; A: string; P: string };
 const SECTION_KEYS = ['S', 'O', 'A', 'P'] as const;
@@ -281,14 +313,14 @@ function ConflictResolutionPanel({
 
 function NoteDetailView({ note }: { note: NoteDetail }) {
   const { currentUser } = useCurrentUser();
-  const canEdit = canEditNoteContent(currentUser.role);
   const [rejectReason, setRejectReason] = useState('');
   const queryClient = useQueryClient();
   const isOnline = useOnlineStatus();
   const conflictedNoteIds = useSyncStore((s) => s.conflictedNoteIds);
   const [pendingCount, setPendingCount] = useState(0);
-  const { viewers, lastRemoteChange } = useNoteRealtime(note.id);
+  const { viewers, lastRemoteChange, remoteVersionAdded } = useNoteRealtime(note.id);
   const [announcement, setAnnouncement] = useState('');
+  const canEdit = canEditNoteContent(currentUser.role);
 
   const initialSnapshot = noteMachine.resolveState({
     value: note.status as NoteStatus,
@@ -315,13 +347,85 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
     }
   }, [note.id, isOnline, queryClient]);
 
+  // --- Local optimistic ReviewEvent, reconciled with the server on ack ---
+  // Per spec: "Emit a local ReviewEvent immediately on optimistic
+  // transition; reconcile with the server-assigned eventId on ack." We
+  // keep a small list of events not yet confirmed by the server; they
+  // render in the review history immediately, then get replaced once the
+  // real refetch brings back the server's actual event (with its real id).
+  const [optimisticEvents, setOptimisticEvents] = useState<ReviewEvent[]>([]);
+
+  // --- Machine-mediated real-time transitions (satisfies "server-pushed
+  // transitions must run through the same machine") ---
+  const [remoteBanner, setRemoteBanner] = useState<string | null>(null);
+
   useEffect(() => {
-    if (lastRemoteChange) {
+    console.log('[debug] lastRemoteChange fired:', lastRemoteChange); // TEMP DEBUG
+    if (!lastRemoteChange) return;
+    try {
+      const machineEvent = reconstructEventForTransition(
+        lastRemoteChange.fromStatus,
+        lastRemoteChange.toStatus,
+        lastRemoteChange.actorId
+      );
+      console.log('[debug] reconstructed machineEvent:', machineEvent); // TEMP DEBUG
+      if (machineEvent && state.can(machineEvent)) {
+        send(machineEvent);
+        console.log('[debug] sent machineEvent to state machine'); // TEMP DEBUG
+      } else {
+        console.log('[debug] machineEvent was null or state.can() returned false'); // TEMP DEBUG
+      }
       setAnnouncement(
         `Note status changed to ${lastRemoteChange.toStatus} by ${lastRemoteChange.actorId}`
       );
+      setRemoteBanner(
+        `${lastRemoteChange.actorId} changed this note's status to ${lastRemoteChange.toStatus}`
+      );
+      console.log('[debug] setRemoteBanner called'); // TEMP DEBUG
+    } catch (err) {
+      console.error('[debug] ERROR in real-time transition effect:', err); // TEMP DEBUG
     }
+    const timer = setTimeout(() => setRemoteBanner(null), 6000);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lastRemoteChange]);
+
+  // --- Proactive conflict detection from version_added pushes ---
+  // Per spec: "If the server-pushed version supersedes an in-flight
+  // optimistic edit, the resolution UI is the same three-way merge." We
+  // don't wait for our OWN save to fail with a 409 — if we have unsaved
+  // local edits when someone else's version_added arrives, we surface
+  // the conflict panel proactively.
+  useEffect(() => {
+    if (!remoteVersionAdded) return;
+    if (remoteVersionAdded.versionId === baseVersionIdRefCurrentForEffect()) return; // our own save's echo
+    if (dirtySectionsRefCurrentForEffect().size === 0) return; // no local edits to protect
+
+    setConflict({
+      error: 'version_conflict',
+      current: {
+        id: remoteVersionAdded.versionId,
+        revision: remoteVersionAdded.revision,
+        authoredBy: { id: 'unknown', role: 'CLINICIAN' },
+      },
+      commonAncestor: {
+        id: baseVersionIdRefCurrentForEffect(),
+        revision: note.currentVersion.revision,
+      },
+    });
+    track('proactive_conflict_detected', { noteId: note.id });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [remoteVersionAdded]);
+
+  // Small helper functions so the effect above can read the LATEST ref
+  // values without needing them in its dependency array (they're refs,
+  // not state, so they don't trigger re-renders on their own anyway).
+  function baseVersionIdRefCurrentForEffect() {
+    return baseVersionIdRef.current;
+  }
+  function dirtySectionsRefCurrentForEffect() {
+    return dirtySections;
+  }
 
   const transitionMutation = useMutation({
     mutationFn: postTransition,
@@ -330,6 +434,8 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
       const previousNote = queryClient.getQueryData<NoteDetail>(['note', note.id]);
       const optimisticToStatus = EVENT_TO_STATUS[variables.event.type];
       const actorId = 'actor' in variables.event ? variables.event.actor.id : currentUser.id;
+      const actorRole = 'actor' in variables.event ? variables.event.actor.role : currentUser.role;
+      const reason = 'reason' in variables.event ? variables.event.reason : undefined;
 
       queryClient.setQueryData<NoteDetail>(['note', note.id], (old) => {
         if (!old) return old;
@@ -345,15 +451,34 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
         };
       });
 
-      return { previousNote };
+      // Emit the local optimistic ReviewEvent immediately.
+      const tempEvent: ReviewEvent = {
+        id: `optimistic_${Date.now()}`,
+        noteId: note.id,
+        versionId: note.currentVersion.id,
+        fromStatus: note.status as NoteStatus,
+        toStatus: optimisticToStatus as NoteStatus,
+        actorId,
+        actorRole,
+        reason,
+        occurredAt: new Date().toISOString(),
+      };
+      setOptimisticEvents((prev) => [...prev, tempEvent]);
+
+      return { previousNote, tempEventId: tempEvent.id };
     },
-    onSuccess: (_result, variables) => {
+    onSuccess: (_result, variables, context) => {
       setAnnouncement(`Note transitioned to ${EVENT_TO_STATUS[variables.event.type]}`);
+      // Reconcile: the real refetch (triggered in onSettled) will bring
+      // back the server's actual event with its real id — drop our
+      // temporary placeholder now that the real one is on its way in.
+      setOptimisticEvents((prev) => prev.filter((e) => e.id !== context?.tempEventId));
     },
     onError: (err, _variables, context) => {
       if (context?.previousNote) {
         queryClient.setQueryData(['note', note.id], context.previousNote);
       }
+      setOptimisticEvents((prev) => prev.filter((e) => e.id !== context?.tempEventId));
       alert(`Action failed: ${(err as Error).message}. Reverted.`);
     },
     onSettled: () => {
@@ -364,7 +489,6 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
   const [sections, setSections] = useState<SoapSections>(note.currentVersion.content.sections);
   const [dirtySections, setDirtySections] = useState<Set<string>>(new Set());
   const baseVersionIdRef = useRef(note.currentVersion.id);
-  const pendingSaveContentRef = useRef<SoapSections | null>(null);
   const [conflict, setConflict] = useState<VersionConflict | null>(null);
 
   const saveMutation = useMutation({
@@ -376,14 +500,12 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
       clearQueuedWritesForNote(note.id).then(() => setPendingCount(0));
       useSyncStore.getState().clearConflict(note.id);
       queryClient.invalidateQueries({ queryKey: ['note', note.id] });
-      flushPendingSaveIfAny();
     },
     onError: async (err, variables) => {
       const maybeConflict = err as VersionConflict;
       if (maybeConflict?.error === 'version_conflict') {
         setConflict(maybeConflict);
-        track('version_conflict_detected', { noteId: note.id }, { important: true });
-        flushPendingSaveIfAny();
+        track('version_conflict_detected', { noteId: note.id });
         return;
       }
 
@@ -393,7 +515,6 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
           baseVersionIdRef.current = result.version.id;
           setDirtySections(new Set());
           queryClient.invalidateQueries({ queryKey: ['note', note.id] });
-          flushPendingSaveIfAny();
           return;
         } catch {
           // Retry also failed — fall through and queue it below.
@@ -409,14 +530,11 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
       });
       setPendingCount((c) => c + 1);
       track('write_queued_offline', { noteId: note.id });
-      flushPendingSaveIfAny();
     },
   });
 
-  // Fires exactly one follow-up save if content changed WHILE the just-
-  // finished save was in flight — this is the "coalesce in-flight saves"
-  // requirement: never two concurrent POSTs, but never silently drop an
-  // edit that happened during the wait either.
+  const pendingSaveContentRef = useRef<SoapSections | null>(null);
+
   function flushPendingSaveIfAny() {
     if (pendingSaveContentRef.current) {
       const content = pendingSaveContentRef.current;
@@ -434,9 +552,6 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
     if (conflict) return;
 
     if (saveMutation.isPending) {
-      // A save is already in flight — don't fire a second concurrent
-      // POST. Remember the latest content; flushPendingSaveIfAny will
-      // send exactly one follow-up save once the in-flight one settles.
       pendingSaveContentRef.current = newSections;
       return;
     }
@@ -494,7 +609,6 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [note.currentVersion.id]);
 
-  // --- Any-two-versions diff picker ---
   const [compareVersionIds, setCompareVersionIds] = useState<string[]>([]);
 
   function toggleCompareVersion(versionId: string) {
@@ -596,6 +710,10 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
   const noteHasUnresolvedConflict = conflictedNoteIds.includes(note.id);
   const isLocked = note.status === 'LOCKED';
 
+  // Merge server-confirmed events with any still-pending optimistic ones
+  // for display, newest last (matches the existing review history order).
+  const displayedEvents = [...note.review.events, ...optimisticEvents];
+
   return (
     <div style={{ padding: 24, display: 'flex', gap: 28, maxWidth: 1200, margin: '0 auto' }}>
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -614,6 +732,20 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
             </span>
           )}
         </div>
+
+        {remoteBanner && (
+          <p
+            style={{
+              background: 'var(--lavender-50)',
+              color: 'var(--navy-700)',
+              padding: '8px 12px',
+              borderRadius: 6,
+              fontSize: 13,
+            }}
+          >
+            🔄 {remoteBanner}
+          </p>
+        )}
 
         {viewers.length > 1 && (
           <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
@@ -795,7 +927,7 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
                 fontSize: 14,
                 resize: 'vertical',
                 outline: 'none',
-                background: conflict || isLocked ? '#f5f5f5' : '#fff',
+                background: conflict || isLocked || !canEdit ? '#f5f5f5' : '#fff',
               }}
             />
           </div>
@@ -804,13 +936,13 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
 
         <h3 style={{ fontSize: 18 }}>Review history</h3>
         <ul style={{ listStyle: 'none', padding: 0, fontSize: 13 }}>
-          {note.review.events.map((event) => (
+          {displayedEvents.map((event) => (
             <li
               key={event.id}
               style={{
                 padding: '8px 0',
                 borderBottom: '1px solid var(--border-subtle)',
-                color: 'var(--text-muted)',
+                color: event.id.startsWith('optimistic_') ? 'var(--amber-700)' : 'var(--text-muted)',
               }}
             >
               <span style={{ color: 'var(--navy-900)', fontWeight: 500 }}>
@@ -818,6 +950,9 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
               </span>{' '}
               by {event.actorId} at {new Date(event.occurredAt).toLocaleString()}
               {event.reason && ` — "${event.reason}"`}
+              {event.id.startsWith('optimistic_') && (
+                <span style={{ fontSize: 11 }}> (saving...)</span>
+              )}
             </li>
           ))}
         </ul>

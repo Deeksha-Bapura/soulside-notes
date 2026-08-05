@@ -9,7 +9,14 @@ type NoteEvent =
       eventId: string;
       seq?: number;
     }
-  | { type: 'note.presence'; noteId: string; viewers: Array<{ id: string; role: string }> };
+  | { type: 'note.presence'; noteId: string; viewers: Array<{ id: string; role: string }> }
+  | {
+      type: 'note.version_added';
+      noteId: string;
+      version: { id: string; revision: number };
+      eventId: string;
+      seq?: number;
+    };
 
 type Listener = (event: NoteEvent) => void;
 
