@@ -1,0 +1,32 @@
+<svg width="680" height="404" viewBox="0 0 680 404" xmlns="http://www.w3.org/2000/svg" role="img">
+<title>Real-time reconciliation flow</title>
+<desc>Flowchart showing five steps: a WebSocket event arrives, it patches the React Query cache for instant display, the event is reconstructed into a machine event, that event is sent to the XState machine so its internal state stays correct, and finally the UI re-renders from both sources.</desc>
+<defs>
+<marker id="arrow2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="#3C3489" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+</defs>
+
+<rect width="680" height="404" fill="#ffffff"/>
+
+<rect x="210" y="40" width="260" height="44" rx="8" fill="#CECBF6" stroke="#3C3489" stroke-width="0.5"/>
+<text x="340" y="62" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="14" font-weight="600" fill="#26215C">WebSocket event arrives</text>
+<line x1="340" y1="84" x2="340" y2="104" stroke="#3C3489" stroke-width="1.5" marker-end="url(#arrow2)"/>
+
+<rect x="210" y="104" width="260" height="56" rx="8" fill="#9FE1CB" stroke="#0F6E56" stroke-width="0.5"/>
+<text x="340" y="122" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="14" font-weight="600" fill="#085041">Patch React Query cache</text>
+<text x="340" y="140" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="12" fill="#0F6E56">Status updates instantly</text>
+<line x1="340" y1="160" x2="340" y2="180" stroke="#3C3489" stroke-width="1.5" marker-end="url(#arrow2)"/>
+
+<rect x="210" y="180" width="260" height="56" rx="8" fill="#FAC775" stroke="#854F0B" stroke-width="0.5"/>
+<text x="340" y="198" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="14" font-weight="600" fill="#633806">Reconstruct machine event</text>
+<text x="340" y="216" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="12" fill="#854F0B">From the from and to status</text>
+<line x1="340" y1="236" x2="340" y2="256" stroke="#3C3489" stroke-width="1.5" marker-end="url(#arrow2)"/>
+
+<rect x="210" y="256" width="260" height="44" rx="8" fill="#FAC775" stroke="#854F0B" stroke-width="0.5"/>
+<text x="340" y="278" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="14" font-weight="600" fill="#633806">Send to XState machine</text>
+<line x1="340" y1="300" x2="340" y2="320" stroke="#3C3489" stroke-width="1.5" marker-end="url(#arrow2)"/>
+
+<rect x="210" y="320" width="260" height="44" rx="8" fill="#D3D1C7" stroke="#5F5E5A" stroke-width="0.5"/>
+<text x="340" y="342" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="14" font-weight="600" fill="#444441">UI re-renders</text>
+</svg>

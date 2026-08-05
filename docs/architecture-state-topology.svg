@@ -1,0 +1,38 @@
+<svg width="680" height="500" viewBox="0 0 680 500" xmlns="http://www.w3.org/2000/svg" role="img">
+<title>State topology: browser and server</title>
+<desc>Structural diagram showing the browser containing a React Query cache and an XState machine, and the server containing Express routes and the same shared state machine module, connected by an HTTP mutation arrow going down and a WebSocket broadcast arrow going up.</desc>
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="#0C447C" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+</defs>
+
+<rect width="680" height="500" fill="#ffffff"/>
+
+<rect x="90" y="50" width="500" height="180" rx="20" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text x="115" y="80" font-family="Arial, sans-serif" font-size="14" font-weight="600" fill="#0C447C">Browser (one tab)</text>
+<text x="115" y="98" font-family="Arial, sans-serif" font-size="12" fill="#185FA5">Runs on the reviewer's device</text>
+
+<rect x="120" y="105" width="210" height="105" rx="12" fill="#9FE1CB" stroke="#0F6E56" stroke-width="0.5"/>
+<text x="225" y="140" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="14" font-weight="600" fill="#085041">React Query cache</text>
+<text x="225" y="165" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="12" fill="#0F6E56">Notes and versions</text>
+
+<rect x="350" y="105" width="210" height="105" rx="12" fill="#FAC775" stroke="#854F0B" stroke-width="0.5"/>
+<text x="455" y="140" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="14" font-weight="600" fill="#633806">XState machine</text>
+<text x="455" y="165" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="12" fill="#854F0B">Legal actions now</text>
+
+<rect x="90" y="280" width="500" height="180" rx="20" fill="#F5C4B3" stroke="#993C1D" stroke-width="0.5"/>
+<text x="115" y="310" font-family="Arial, sans-serif" font-size="14" font-weight="600" fill="#712B13">Server (dummy backend)</text>
+<text x="115" y="328" font-family="Arial, sans-serif" font-size="12" fill="#993C1D">Express plus WebSocket</text>
+
+<rect x="120" y="335" width="210" height="105" rx="12" fill="#D3D1C7" stroke="#5F5E5A" stroke-width="0.5"/>
+<text x="225" y="370" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="14" font-weight="600" fill="#444441">Express routes</text>
+<text x="225" y="395" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="12" fill="#5F5E5A">Applies the same guards</text>
+
+<rect x="350" y="335" width="210" height="105" rx="12" fill="#FAC775" stroke="#854F0B" stroke-width="0.5"/>
+<text x="455" y="370" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="14" font-weight="600" fill="#633806">Same machine module</text>
+<text x="455" y="395" text-anchor="middle" dominant-baseline="central" font-family="Arial, sans-serif" font-size="12" fill="#854F0B">The real authority</text>
+
+<line x1="250" y1="230" x2="250" y2="278" stroke="#0C447C" stroke-width="1.5" marker-end="url(#arrow)"/>
+<line x1="430" y1="278" x2="430" y2="230" stroke="#0C447C" stroke-width="1.5" marker-end="url(#arrow)"/>
+</svg>
