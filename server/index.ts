@@ -23,7 +23,8 @@ seed(500);
 // (Flagging this now as agreed: we'll revisit whether autosave/offline
 // testing needs us to be stricter about which routes are "real" vs "dev".)
 app.post('/api/dev/seed', (req, res) => {
-  const count = Number(req.body?.count) || 500;
+  const rawCount = req.body?.count;
+  const count = typeof rawCount === 'number' && rawCount >= 0 ? rawCount : 500;
   seed(count);
   res.json({ seeded: count });
 });

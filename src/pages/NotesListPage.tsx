@@ -285,10 +285,48 @@ export default function NotesListPage() {
           marginBottom: 12,
         }}
       />
-      {activeSearch && allNotes.length === 0 && !isLoading && (
-        <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-          No results for "{activeSearch}". Try a different search term.
-        </p>
+      {!isLoading && allNotes.length === 0 && (
+        <div
+          style={{
+            padding: '32px 16px',
+            textAlign: 'center',
+            background: '#fff',
+            border: '1px solid var(--border-subtle)',
+            borderRadius: 8,
+            marginBottom: 12,
+          }}
+        >
+          {activeSearch ? (
+            // No-results state: a search was run and matched nothing.
+            <>
+              <p style={{ fontWeight: 600, marginBottom: 4 }}>
+                No results for "{activeSearch}"
+              </p>
+              <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+                Try a different search term, or clear it to see all notes.
+              </p>
+            </>
+          ) : activeStatuses.length > 0 || activeReviewer || activePatientId || dateFrom || dateTo ? (
+            // No-results state: filters are active but match nothing —
+            // distinct from a search yielding nothing, and distinct from
+            // the dataset genuinely being empty.
+            <>
+              <p style={{ fontWeight: 600, marginBottom: 4 }}>No notes match these filters</p>
+              <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+                Try removing a filter to broaden your results.
+              </p>
+            </>
+          ) : (
+            // Genuinely empty state: no filters, no search, and still
+            // nothing — the dataset itself has no notes at all.
+            <>
+              <p style={{ fontWeight: 600, marginBottom: 4 }}>No notes yet</p>
+              <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+                Notes will appear here once they're generated.
+              </p>
+            </>
+          )}
+        </div>
       )}
 
       {/* Status filter pills */}
