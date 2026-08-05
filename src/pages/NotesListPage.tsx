@@ -2,7 +2,7 @@ import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-q
 import { useRef, useEffect, useMemo, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useSearchParams, Link } from 'react-router-dom';
-import { fetchNotes, bulkAssignReviewer } from '../api/notesApi';
+import { fetchNotes, bulkAssignReviewer, bulkRegenerateNotes } from '../api/notesApi';
 import type { NoteStatus } from '../domain/types';
 import { useDebouncedCallback } from '../hooks/useDebouncedCallback';
 import { useCurrentUser, FAKE_USERS } from '../auth/CurrentUserContext';
@@ -84,6 +84,7 @@ export default function NotesListPage() {
   }, [searchParams]);
 
   const activeReviewer = searchParams.get('reviewer') ?? '';
+  const activePatientId = searchParams.get('patient') ?? '';
   const dateFrom = searchParams.get('dateFrom') ?? '';
   const dateTo = searchParams.get('dateTo') ?? '';
   const sortBy = searchParams.get('sortBy') ?? 'updatedAt';
@@ -144,7 +145,7 @@ export default function NotesListPage() {
     useInfiniteQuery({
       queryKey: [
         'notes',
-        { status: activeStatuses, reviewer: activeReviewer, search: activeSearch, dateFrom, dateTo, sortBy, sortDir },
+        { status: activeStatuses, reviewer: activeReviewer, patient: activePatientId, search: activeSearch, dateFrom, dateTo, sortBy, sortDir },
       ],
       queryFn: ({ pageParam }) =>
         fetchNotes({
@@ -152,6 +153,7 @@ export default function NotesListPage() {
           limit: 50,
           status: activeStatuses,
           reviewer: activeReviewer || undefined,
+          patient: activePatientId || undefined,
           search: activeSearch || undefined,
           dateFrom: dateFrom || undefined,
           dateTo: dateTo || undefined,
@@ -164,6 +166,14 @@ export default function NotesListPage() {
     });
 
   const allNotes = data?.pages.flatMap((page) => page.items) ?? [];
+  // Patient options are derived from currently-loaded notes rather than a
+  // dedicated /api/patients endpoint — reasonable for a dummy app where
+  // the full patient list isn't otherwise needed anywhere, but worth
+  // naming as a real limitation: a patient not yet scrolled into view
+  // won't appear in this dropdown until their note has loaded once.
+  const patientOptions = Array.from(
+    new Map(allNotes.map((n) => [n.patient.id, n.patient.displayName])).entries()
+  );
   const total = data?.pages[0]?.meta.total ?? 0;
 
   // Bulk selection — persists across scroll/pagination/filter changes for
@@ -195,6 +205,19 @@ export default function NotesListPage() {
     },
   });
 
+  const bulkRegenerateMutation = useMutation({
+    mutationFn: bulkRegenerateNotes,
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ['notes'] });
+      setSelectedIds(new Set());
+      if (result.skipped.length > 0) {
+        alert(
+          `Requested regeneration for ${result.updated.length} note(s). Skipped ${result.skipped.length} (not FAILED).`
+        );
+      }
+    },
+  });
+
   const parentRef = useRef<HTMLDivElement>(null);
   const rowCount = hasNextPage ? allNotes.length + 1 : allNotes.length;
 
@@ -212,7 +235,7 @@ export default function NotesListPage() {
 
   useVisibleNotesRealtime(visibleNoteIds, [
     'notes',
-    { status: activeStatuses, reviewer: activeReviewer, search: activeSearch, dateFrom, dateTo, sortBy, sortDir },
+    { status: activeStatuses, reviewer: activeReviewer, patient: activePatientId, search: activeSearch, dateFrom, dateTo, sortBy, sortDir },
   ]);
 
   useEffect(() => {
@@ -311,6 +334,21 @@ export default function NotesListPage() {
           </select>
         </label>
         <label style={{ fontSize: 13 }}>
+          Patient:{' '}
+          <select
+            value={activePatientId}
+            onChange={(e) => updateParam('patient', e.target.value)}
+            style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid var(--border-subtle)' }}
+          >
+            <option value="">Any</option>
+            {patientOptions.map(([id, name]) => (
+              <option key={id} value={id}>
+                {name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label style={{ fontSize: 13 }}>
           Updated from:{' '}
           <input
             type="date"
@@ -370,6 +408,20 @@ export default function NotesListPage() {
             }}
           >
             {bulkAssignMutation.isPending ? 'Assigning...' : 'Assign reviewer'}
+          </button>
+          <button
+            onClick={() => bulkRegenerateMutation.mutate({ noteIds: Array.from(selectedIds) })}
+            disabled={bulkRegenerateMutation.isPending}
+            style={{
+              background: '#fff',
+              border: '1px solid var(--navy-900)',
+              borderRadius: 6,
+              padding: '6px 14px',
+              fontWeight: 600,
+              cursor: 'pointer',
+            }}
+          >
+            {bulkRegenerateMutation.isPending ? 'Requesting...' : 'Request regeneration'}
           </button>
           <button
             onClick={() => setSelectedIds(new Set())}

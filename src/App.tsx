@@ -5,6 +5,8 @@ import { useCurrentUser, FAKE_USERS } from './auth/CurrentUserContext';
 import { OfflineBanner } from './components/OfflineBanner';
 import { useReplayOnReconnect } from './offline/useReplayOnReconnect';
 import { useFlushOnRouteChange } from './telemetry/useFlushOnRouteChange';
+import { RequirePermission } from './auth/RequirePermission';
+import { hasValidSession } from './auth/permissions';
 
 function App() {
   const { currentUser, setCurrentUserId } = useCurrentUser();
@@ -47,10 +49,15 @@ function App() {
           </select>
         </label>
       </div>
-      <Routes>
-        <Route path="/" element={<NotesListPage />} />
-        <Route path="/notes/:id" element={<NoteDetailPage />} />
-      </Routes>
+      <RequirePermission
+        check={hasValidSession}
+        deniedMessage="Your session role could not be verified. Please sign in again."
+      >
+        <Routes>
+          <Route path="/" element={<NotesListPage />} />
+          <Route path="/notes/:id" element={<NoteDetailPage />} />
+        </Routes>
+      </RequirePermission>
     </div>
   );
 }

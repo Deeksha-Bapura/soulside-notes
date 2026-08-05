@@ -19,6 +19,10 @@ function mulberry32(seed: number) {
 
 const rand = mulberry32(42); // fixed seed = reproducible dataset
 
+// All 8 statuses from the domain model — previously this list was missing
+// FAILED and AMENDED, meaning no seeded note could ever land in either
+// state, which silently broke any testing of those statuses (including
+// the "read-only LOCKED" and "bulk regenerate FAILED notes" features).
 const STATUSES: NoteStatus[] = [
   'READY_FOR_REVIEW',
   'IN_REVIEW',
@@ -26,10 +30,31 @@ const STATUSES: NoteStatus[] = [
   'LOCKED',
   'REJECTED',
   'GENERATING',
+  'FAILED',
+  'AMENDED',
 ];
 
 const FIRST_NAMES = ['Riley', 'Jordan', 'Sam', 'Casey', 'Morgan', 'Avery', 'Quinn', 'Reese'];
 const LAST_INITIALS = ['A.', 'B.', 'C.', 'D.', 'E.', 'F.', 'G.'];
+
+// A fixed pool of patients that notes are drawn FROM, rather than every
+// note getting a brand-new random patient. This is what makes the
+// "filter by patient" feature actually demonstrate its value — a real
+// clinical dataset has patients with multiple notes across visits, not
+// one note per patient. Pool size (150) is deliberately smaller than the
+// note count so repeats are common.
+const PATIENT_POOL_SIZE = 150;
+
+function buildPatientPool() {
+  const pool: Array<{ id: string; displayName: string }> = [];
+  for (let i = 0; i < PATIENT_POOL_SIZE; i++) {
+    pool.push({
+      id: `pat_${i.toString(36).padStart(4, '0')}`,
+      displayName: `${pick(FIRST_NAMES)} ${pick(LAST_INITIALS)}`,
+    });
+  }
+  return pool;
+}
 
 export const notes = new Map<string, Note>();
 export const versions = new Map<string, NoteVersion>();
@@ -64,11 +89,14 @@ export function seed(count: number) {
   versions.clear();
   events.clear();
 
+  const patientPool = buildPatientPool();
+
   for (let i = 0; i < count; i++) {
     const noteId = `note_${i.toString(36).padStart(6, '0')}`;
     const versionId = `ver_${i.toString(36).padStart(6, '0')}_1`;
     const status = pick(STATUSES);
     const now = new Date(Date.now() - Math.floor(rand() * 1000 * 60 * 60 * 24 * 30)).toISOString();
+    const patient = pick(patientPool);
 
     const version: NoteVersion = {
       id: versionId,
@@ -84,10 +112,7 @@ export function seed(count: number) {
 
     const note: Note = {
       id: noteId,
-      patient: {
-        id: `pat_${i.toString(36).padStart(6, '0')}`,
-        displayName: `${pick(FIRST_NAMES)} ${pick(LAST_INITIALS)}`,
-      },
+      patient,
       sessionId: `sess_${i}`,
       status,
       currentVersionId: versionId,

@@ -45,6 +45,7 @@ app.get('/api/notes', (req, res) => {
   const statusParam = req.query.status as string | undefined;
   const statusFilter = statusParam ? statusParam.split(',') : null;
   const reviewerParam = req.query.reviewer as string | undefined;
+  const patientParam = req.query.patient as string | undefined;
   const searchParam = (req.query.search as string | undefined)?.trim().toLowerCase();
   const dateFrom = req.query.dateFrom as string | undefined;
   const dateTo = req.query.dateTo as string | undefined;
@@ -58,6 +59,9 @@ app.get('/api/notes', (req, res) => {
   }
   if (reviewerParam) {
     all = all.filter((note) => note.assignedReviewerId === reviewerParam);
+  }
+  if (patientParam) {
+    all = all.filter((note) => note.patient.id === patientParam);
   }
   if (dateFrom) {
     all = all.filter((note) => note.updatedAt >= dateFrom);
@@ -146,6 +150,36 @@ app.post('/api/notes/bulk-assign', (req, res) => {
     // rather than silently corrupting state.
     if (note && note.status === 'READY_FOR_REVIEW') {
       note.assignedReviewerId = reviewerId;
+      note.updatedAt = new Date().toISOString();
+      updated.push(noteId);
+    } else {
+      skipped.push(noteId);
+    }
+  }
+
+  res.json({ updated, skipped });
+});
+
+// --- POST /api/notes/bulk-regenerate : bulk-request regeneration ---
+app.post('/api/notes/bulk-regenerate', (req, res) => {
+  const { noteIds } = req.body ?? {};
+  if (!Array.isArray(noteIds)) {
+    res.status(400).json({ error: 'noteIds is required' });
+    return;
+  }
+
+  const updated: string[] = [];
+  const skipped: string[] = [];
+
+  for (const noteId of noteIds) {
+    const note = notes.get(noteId);
+    // Regeneration only makes sense from FAILED (the machine's actual
+    // regenerate transition) — bulk-requesting it on notes in other
+    // states would silently violate the same invariants the single-note
+    // action bar already enforces, so we hold this bulk action to the
+    // same rule rather than granting it a special exemption.
+    if (note && note.status === 'FAILED') {
+      note.status = 'GENERATING';
       note.updatedAt = new Date().toISOString();
       updated.push(noteId);
     } else {

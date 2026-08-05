@@ -24,3 +24,9 @@ export function canAccessNoteDetail(role: Role): boolean {
   // testable even though today every role passes it.
   return true;
 }
+
+const VALID_ROLES = ['CLINICIAN', 'REVIEWER', 'ADMIN', 'READONLY_AUDITOR'];
+
+export function hasValidSession(role: Role): boolean {
+  return VALID_ROLES.includes(role);
+}

@@ -24,6 +24,7 @@ export async function fetchNotes(params: {
   limit?: number;
   status?: string[];
   reviewer?: string;
+  patient?: string;
   search?: string;
   dateFrom?: string;
   dateTo?: string;
@@ -37,6 +38,7 @@ export async function fetchNotes(params: {
     search.set('status', params.status.join(','));
   }
   if (params.reviewer) search.set('reviewer', params.reviewer);
+  if (params.patient) search.set('patient', params.patient);
   if (params.search) search.set('search', params.search);
   if (params.dateFrom) search.set('dateFrom', params.dateFrom);
   if (params.dateTo) search.set('dateTo', params.dateTo);
@@ -61,6 +63,20 @@ export async function bulkAssignReviewer(params: {
   });
   if (!res.ok) {
     throw new Error(`Bulk assign failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function bulkRegenerateNotes(params: {
+  noteIds: string[];
+}): Promise<{ updated: string[]; skipped: string[] }> {
+  const res = await fetch('/api/notes/bulk-regenerate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) {
+    throw new Error(`Bulk regenerate failed: ${res.status}`);
   }
   return res.json();
 }
