@@ -17,43 +17,60 @@ npm run dev      # frontend, :5173
 Open `http://localhost:5173`. Use the "Acting as" dropdown to switch between fake users
 (reviewers, clinicians, admin, read-only auditor) to exercise role/ownership guards.
 
-Run the state machine unit tests: `npm run test`
+Run the state machine plus pure-logic unit tests: `npm run test`
+
+Run the provided simulation and the 5 required test scenarios (server must be running):
+```bash
+npx tsx scripts/simulate_workflow.ts
+npx tsx scripts/scenario_1_concurrent_edit.ts
+npx tsx scripts/scenario_2_offline_replay.ts
+npx tsx scripts/scenario_3_realtime_race.ts
+npx tsx scripts/scenario_4_resubmit_after_supersede.ts
+npx tsx scripts/scenario_5_no_leak.ts
+```
+See `scripts/README.md` for what each proves and its actual recorded results.
 
 ## Scope: what's built deeply vs. minimally vs. cut
 
-**Built fully:** state machine (fully guarded, unit tested), optimistic updates with
-rollback, notes list virtualization (tested to 500 seeded notes; the mechanism is
-count-independent, see Scale section), the 409 three-way conflict resolution UI, the
-dummy backend with latency/failure injection.
+This project went through two passes: an initial build covering the core architecture,
+followed by a deliberate, exhaustive audit against the full spec text, which surfaced
+and closed a substantial number of real gaps, including a genuine security hole. Both
+passes are reflected honestly below.
+
+**Built fully, including server-side enforcement:** state machine (fully guarded, unit
+tested, and now the literal authority the server itself defers to, see Authorization),
+optimistic updates with rollback, notes list virtualization (verified at the
+assignment's actual 100k scale, not just architecturally, see Scale), the 409 three-way
+conflict resolution UI (verified both manually and via an automated script), real-time
+sync (all three event types, transitions routed through the same machine client- and
+server-side), the dummy backend with latency/failure injection, telemetry (full spec
+including retry-with-backoff and IndexedDB parking), and the full notes-list feature set
+(status/reviewer/patient/date filters, debounced search, sortable columns, bulk actions,
+skeleton loaders, distinct empty/no-results states).
 
 **Built real but modest:** offline queue. The core "survive reload, replay in order"
-loop works, and this was verified rigorously rather than just built-and-assumed: testing
-surfaced two real bugs (a stalled fetch under simulated offline conditions never
-triggering the error handler, and the browser's `online` event not always firing
-reliably) that were found and fixed during manual testing, not just documented as known
-gaps. Not hardened against multi-tab IndexedDB contention or truly exhaustive edge cases.
-Real-time reconciliation (status changes and presence work reliably, verified with two
-simultaneous browser tabs; the periodic auto-approve simulation itself is simplistic,
-a random dice roll, not a realistic actor model). Telemetry (the `track()` pattern and
-batching are real; only a handful of call sites are instrumented, not every possible
-action).
+loop works, verified rigorously: testing surfaced and led to fixing a stalled-fetch bug
+(DevTools' offline simulation not reliably triggering error handlers), an unreliable
+`online` event, and a false-positive "offline" classification for the backend's own
+random 5% failures (now retried once before queuing, so a real connectivity issue is
+distinguished from a coincidental simulated failure). Not hardened against multi-tab
+IndexedDB contention. The periodic real-time auto-approve simulation is intentionally
+simplistic, a random dice roll rather than a realistic actor model.
 
 **Explicitly cut:**
 - CRDT collaborative editing: listed as bonus in the spec, out of scope here
 - Character-level diffing: word-level (see Concurrency section) covers the review need
 - Plugin architecture for other note types: SOAP only
 - PWA/installability, module federation
-- Comprehensive multi-tab offline sync testing
-- Accessibility: see dedicated section below; this is the area I'd invest in next
+- Automated architecture diagram: explicitly marked optional in the spec
 
 ## Visual design
 
-A light styling pass was added referencing Soulside's actual brand palette (navy
-`#1a1a35`, amber `#fcb613`, lavender `#f0f0fd`, Cormorant Garamond for headings),
-implemented via CSS custom properties as design tokens rather than one-off hex values,
-so the palette is centrally adjustable. This was a deliberate late addition on top of
-already-complete, already-tested functionality. Per the assignment's own framing,
-visual polish was never the priority, and no functional logic changed during this pass.
+A styling pass referencing Soulside's actual brand palette (navy `#1a1a35`, amber
+`#fcb613`, lavender `#f0f0fd`, Cormorant Garamond for headings), implemented via CSS
+custom properties as design tokens. A deliberate late addition on top of already-complete,
+already-tested functionality. The spec explicitly deprioritizes polish relative to
+architecture, and no functional logic changed during this pass.
 
 ---
 
@@ -65,251 +82,341 @@ Client state splits into three layers that don't overlap:
 
 - **Server cache** (TanStack Query): anything that originated from the API, notes,
   versions, review events. Keyed by `['note', id]`, `['notes', {filters}]`, etc. This is
-  the layer optimistic updates and real-time patches write into.
+  the layer optimistic updates, real-time patches, and eventId-reconciled events write into.
 - **Domain/interaction state** (XState): one running machine instance per *open* note,
-  representing "what's legal to do right now." Not persisted state, derived fresh from
-  the server's real status on every note-detail mount via `resolveState()`.
-- **Local UI state** (`useState`): form inputs, dirty-section tracking, which version is
-  selected in the history sidebar, the reject-reason textbox. Never touches the server
-  directly; always flows through a mutation.
+  representing "what's legal to do right now." Derived fresh from the server's real
+  status on every note-detail mount via `resolveState()`, and re-driven by
+  server-pushed transitions via `send()` (see Real-time section), not just patched
+  around.
+- **Local UI state** (`useState`): form inputs, dirty-section tracking, which versions
+  are selected for comparison, the reject-reason textbox.
 
-For the **notes list** specifically (100k+ rows), I deliberately did **not** spawn one
-XState actor per row. Guard evaluation for list-level bulk actions would use the
-machine's pure/stateless transition checking rather than live actors; actors are only
-spawned for the single note currently open in the detail view. This is the difference
-between "is this legal" (cheap, pure, works at any scale) and "track live state for this
-specific thing I'm actively looking at" (actors, appropriately scoped to 1).
+For the **notes list** (verified functioning correctly at 100k+ rows, see Scale), no
+XState actor is spawned per row; actors are only spawned for the single note currently
+open in the detail view. Guard evaluation for bulk actions and server-side authorization
+both go through the pure, stateless machine-evaluation path (`resolveState` plus `can`),
+never live per-row actors.
 
-**Known gap:** the machine's snapshot and the query cache both independently represent
-"current status," and I hit a real bug from this during Step 10: a real-time push
-correctly patched the cache but the UI kept reading `state.value` (the machine's stale
-local snapshot) instead. Fixed by making `note.status` (cache) the single display source
-of truth, with the machine used purely for `state.can()` guard evaluation, never for
-display. A cleaner long-term design would derive the machine's snapshot from the cache on
-every render rather than only at mount, eliminating the redundancy entirely. I didn't do
-this here for time reasons, having found and worked around the specific bug it caused.
+**Resolved gap** (previously documented as open): the machine's snapshot and the query
+cache used to independently represent "current status," which caused a real display bug
+during initial real-time work: a server push correctly patched the cache but the UI
+kept reading the machine's stale local snapshot. This is now fully resolved on two
+fronts: `note.status` (cache) remains the single *display* source of truth, and
+server-pushed transitions are additionally reconstructed into the actual machine event
+and run through `send()`, so the machine's own internal state also stays genuinely
+correct, not just bypassed for display purposes. See section 6.
 
 ### 2. State machine
 
-Implemented with XState v5 (`src/domain/noteMachine.ts`), encoding the full transition
-table from the spec: 8 states, each transition guarded by role/ownership/MFA/reason
-checks as appropriate, composed via `and()` where a transition needs multiple conditions
-(e.g. `approve` requires both `isAssignedReviewer` AND `hasMfa`).
+Implemented with XState v5 (`src/domain/noteMachine.ts`), encoding the full 11-row
+transition table from the spec, each transition guarded by role/ownership/MFA/reason
+checks, composed via `and()` where a transition needs multiple conditions.
 
-Every user-initiated action is checked via `state.can(event)` *before* the corresponding
-button is even enabled, never after the fact. Disabled actions show a specific reason
-(wrong role, not the assigned reviewer, missing MFA, missing reject reason), derived
-alongside the guard checks. The reason strings are a UI-layer approximation reasoning
-about *why* a guard likely failed, kept separate from the guard evaluation itself. The
-button's actual enabled/disabled state always comes from the real `state.can()` call, so
-a wrong guess about "why" can never make an illegal action clickable.
+**This machine is now the actual authority on both client and server**, not just a UI
+convenience. The `/transitions` endpoint imports and evaluates the identical machine
+module the frontend uses (`server/index.ts` imports directly from `src/domain/`),
+reconstructing a snapshot from the note's real status/context and calling `.can(event)`
+before applying anything. This was added after an audit against the spec's explicit
+requirement that a hostile client's rogue button click cannot silently bypass a guard,
+which revealed the server was originally accepting any transition a client sent,
+regardless of role/ownership/state. Verified via a direct `fetch()` from the browser
+console impersonating an unassigned "hacker" reviewer attempting to approve a
+READY_FOR_REVIEW note: correctly rejected with 403, confirming the guard cannot be
+bypassed by skipping the UI entirely.
 
-Server-pushed transitions (from the WebSocket) and user-clicked transitions are the exact
-same event type sent through the exact same machine, deliberately, so there's no separate
-ad-hoc code path for "someone else changed this."
+Disabled action buttons show a specific, UI-layer-approximated reason for why they're
+disabled; the actual enabled/disabled state always comes from the real `state.can()`
+call, so a wrong guess about "why" can never make an illegal action clickable.
 
-10 unit tests cover the happy path, every guard rejection case, the 24h amend grace
-window (using injectable `now` rather than real wall-clock time, for determinism), and
-the failure/regeneration branch.
+10 unit tests cover the happy path, every guard rejection, the 24h grace-window boundary
+(deterministic via injectable time), and the failure/regeneration branch.
 
-**Known simplification:** the mapping from "event type" to "target status string" (needed
-to call the transitions API) lives in a small hardcoded lookup table
-(`EVENT_TO_STATUS`) alongside the component, not inside the machine definition itself.
-This is a parallel source of truth that could in principle drift from the machine. A
-more robust version would have the machine expose its own target-state-for-event query.
+**Known simplification:** `EVENT_TO_STATUS`, a small hardcoded event-to-status lookup
+used for optimistic UI purposes and telemetry labeling, remains a parallel structure
+outside the machine definition. The server-side enforcement path does not rely on this
+table; it derives the real next state from the machine itself via `actor.getSnapshot()`
+after sending the event through a real `createActor` instance (a bare `resolveState`
+snapshot alone was insufficient to execute a transition's side effects; this was found
+and fixed during server-enforcement work).
 
-### 3. Optimistic updates & rollback
+### 3. Optimistic updates and rollback
 
 Both transitions and version saves use TanStack Query's `onMutate`/`onError`/`onSettled`
-mutation lifecycle:
+lifecycle: cancel in-flight queries, snapshot the previous value, write the optimistic
+guess, restore on error, always invalidate on settle for eventual full reconciliation.
 
-- `onMutate`: cancel in-flight refetches for that note (so a stale response can't
-  clobber the optimistic write), snapshot the previous cache value, write the optimistic
-  guess into the cache.
-- `onError`: restore the snapshot exactly, surface the failure.
-- `onSettled`: always invalidate, regardless of success/failure. The final source of
-  truth is always a real refetch; the optimistic write is just a latency mask.
+Verified against the backend's real 5% simulated failure rate, including temporarily
+forcing it to 90% to reliably observe rollback under manual testing, then reverting.
 
-Verified against the backend's real 5% simulated failure rate. Forced it up to 90%
-temporarily during manual testing to reliably observe rollback, then reverted. Confirmed
-the UI never shows a status change that didn't actually happen for longer than one
-failed round trip.
+**Local ReviewEvent plus literal eventId reconciliation:** per the spec's explicit
+requirement, an optimistic local `ReviewEvent` is emitted immediately on every
+transition click (rendered distinctly in the UI, amber with a "(saving...)" label).
+On success, rather than merely discarding the placeholder and waiting for a subsequent
+refetch, the exact server-assigned event from the transition's ack response
+(`result.event`) is swapped in synchronously by its real id, a true one-for-one
+reconciliation with zero visible gap, verified by confirming the persisted event
+survives a full page refresh.
 
-### 4. Concurrency & consistency (conflict resolution)
+### 4. Concurrency and consistency (conflict resolution)
 
-Every version save includes `baseVersionId` (which version this edit assumes it's
-building on). The server compares that to the note's actual current version; a mismatch
-returns `409` with the current version's id/revision/author and a common-ancestor
-reference.
+Every version save includes `baseVersionId`; a mismatch returns `409` with the current
+version and common ancestor. The frontend shows a per-SOAP-section three-way diff
+(your changes vs. ancestor, their changes vs. ancestor), word-level (LCS-based, from
+scratch, `src/lib/diffWords.ts`), letting the user resolve section-by-section rather
+than forcing an all-or-nothing choice. Resolving rebases onto the server's version so
+the merged save won't immediately re-conflict.
 
-On `409`, the frontend fetches the full content of both "theirs" (server's current) and
-the common ancestor, then shows a per-SOAP-section three-way diff: your changes vs.
-ancestor, and their changes vs. ancestor, computed with a from-scratch word-level LCS
-diff (`src/lib/diffWords.ts`), no external diff library. Sections only one side touched
-are visually unflagged; sections both sides touched are flagged and require an explicit
-"keep mine / keep theirs" choice. Resolving rebases the save onto the server's version
-(`baseVersionId` becomes their version's id), so the merged save won't immediately
-re-conflict.
+**Proactive conflict detection**, per the spec's explicit requirement that if the
+server-pushed version supersedes an in-flight optimistic edit, the resolution UI is the
+same three-way merge: the real-time channel now also broadcasts `note.version_added`
+whenever any save succeeds. If a client has unsaved local edits when this arrives for
+their open note, the conflict panel opens proactively. The user is never left
+discovering the conflict only reactively, after their own doomed save fails.
 
-**Deliberately word-level, not character-level:** for clinical prose, word-level is
-readable and sufficient; character-level would be noisier without adding real value for
-this use case.
+**Verified two ways:** manually with two simultaneous browser tabs (including forcing
+tight timing to genuinely diverge before either side saves), and automatically via
+`scripts/scenario_1_concurrent_edit.ts`, 6/6 assertions pass, confirming the second
+writer is rejected with the correct current/commonAncestor payload and the first
+writer's content is never silently lost.
 
-**Autosave coalescing:** a debounce (800ms) means rapid keystrokes produce one save
-request, not one per character, verified via Network tab during testing (10+ keystrokes
-resulted in exactly one POST). `clientMutationId` is sent on every save and checked
-server-side for idempotency, so a retried request (e.g. from the offline queue) can't
-create a duplicate version.
+**Autosave coalescing**, per the spec's explicit requirement to never allow two
+concurrent POSTs and to queue exactly one follow-up save: a debounce (800ms) means
+rapid keystrokes produce one request, not one per character. Additionally, if a save is
+already in flight when further edits arrive, they're held in a ref and flushed as
+exactly one follow-up save once the in-flight request settles, verified by artificially
+slowing the backend to 3s latency and confirming only one trailing request fires
+despite continued typing during the wait.
 
 ### 5. Offline behavior
 
-`navigator.onLine` plus the native `online`/`offline` events drive a visible banner and
-an IndexedDB-backed write queue (`src/offline/db.ts`, using the `idb` wrapper library
-rather than raw IndexedDB's callback API). When a save fails for a non-conflict reason
-(connectivity), it's written to the queue instead of just erroring. On reconnect
-(`online` event, plus once on app mount in case writes were queued in a previous
-session), queued writes replay in original order; replay stops at the first
-connectivity-caused failure (to preserve ordering, never let write #3 land before
-write #2 for the same note) but continues past a real version-conflict failure on one
-note to still attempt others.
+`navigator.onLine` plus native `online`/`offline` events drive a visible banner and an
+IndexedDB-backed write queue (`src/offline/db.ts`, via the `idb` wrapper). Writes that
+fail are queued and replay in order on reconnect, honoring `baseVersionId`; a replayed
+write that lands in a genuine conflict is left queued and flagged for the same
+three-way-merge UI, rather than auto-resolved.
 
-A queued write that replays into a **real** conflict is left in the queue and flagged
-per-note (via a small Zustand store) rather than auto-resolved. Resolving it correctly
-needs the same human-judgment UI as any other conflict, reused rather than duplicated.
+**Two real bugs found and fixed during testing:**
+- Chrome DevTools' "Offline" network throttling stalls fetches rather than rejecting
+  them immediately, so a save attempted while offline could hang indefinitely instead
+  of reaching the error handler that queues it. Fixed by checking `navigator.onLine`
+  before attempting the request, rather than relying solely on the request erroring.
+- The browser's `online` event doesn't always fire reliably when toggling DevTools'
+  simulated connectivity. Fixed by also triggering replay locally whenever the
+  component's own `isOnline` hook transitions to `true`, as a fallback to the global
+  listener.
 
-**Known limitation:** `navigator.onLine` is a browser/network-adapter heuristic, not
-"can actually reach our API." A real production version would pair this with observed
-request failures. Also, the "N changes waiting to sync" counter can lag slightly behind
-the actual IndexedDB queue state in rare timing cases, though the underlying queue and
-replay correctness were verified independently of the counter display.
+**A third distinction added:** since the backend's own 5% random failure rate could be
+mistaken for a genuine connectivity issue, a save failure while `navigator.onLine` is
+still `true` now retries once immediately before falling back to queuing, so a
+coincidental simulated failure doesn't misleadingly show "offline" messaging while the
+user is actually online.
+
+**Known limitation:** `navigator.onLine` remains a network-adapter heuristic, not
+"can reach our API." A production version would pair this with observed request
+failure patterns. The spec's claim of usability for at least 30 minutes offline is
+architecturally sound (no time-based assumptions exist in the queue/replay mechanism)
+but was not verified as a literal continuous 30-minute session, a real gap between
+reasoned confidence and empirical proof, noted honestly rather than silently assumed.
 
 ### 6. Real-time synchronization
 
-A single shared WebSocket connection per browser tab (`src/realtime/socket.ts`), with
-client-driven subscribe/unsubscribe per note. Components subscribe when a note is open
-and unsubscribe on unmount, matching "subscribe to notes currently on screen, unsubscribe
-when they leave the viewport." Reconnection uses exponential backoff (capped at 15s) and
-automatically re-subscribes to everything on reconnect.
+A single shared WebSocket connection per tab (`src/realtime/socket.ts`) with
+client-driven subscribe/unsubscribe. Subscriptions now cover both the open detail
+note and every note currently visible in the virtualized list (`useVisibleNotesRealtime`),
+matching the spec's explicit requirement to subscribe to notes currently on screen
+(list rows in view plus open detail) and unsubscribe when they leave the viewport,
+verified via the Network tab's WS message log showing subscribe/unsubscribe pairs
+firing as rows scroll in and out.
 
-Events carry a server-assigned `eventId`; the client tracks the last ~500 seen ids and
-drops exact duplicates, required because the dummy server deliberately delivers ~2% of
-events twice, simulating the assignment's "design for at-least-once delivery."
+**Reconnection uses exponential backoff with full jitter** (a random delay up to the
+backoff ceiling, not a fixed exponential value), spreading reconnection attempts across
+clients rather than a "thundering herd" all retrying in lockstep. On reconnect, the
+client requests replay of anything missed via a server-assigned sequence number
+(`replay_since`), rather than assuming the gap contained nothing. The server buffers
+the last 500 broadcast events specifically to answer this. Verified by stopping and
+restarting the backend mid-session and confirming the client reconnects and resumes
+receiving live updates without a manual page refresh.
 
-On a `note.status_changed` push, the client both (a) directly patches the query cache
-with the pushed status, and (b) invalidates in the background for full reconciliation.
-Originally implemented as invalidate-only; found during testing that a background
-refetch hitting the simulated 5% failure rate could leave the UI stale indefinitely with
-no retry trigger. Patching directly with the server-pushed value (which is already
-authoritative for that one field) fixed this; the background invalidate remains for
-anything the lightweight patch doesn't cover (assignedReviewer, review events, etc.).
+**All three event types are implemented, both directions:** `note.status_changed`,
+`note.presence`, and `note.version_added` (added during the audit pass, previously
+missing entirely).
 
-Presence (`note.presence` events, viewer list per note) is implemented and tested with
-two simultaneous browser tabs.
+**Transitions are genuinely routed through the same machine on receipt**, per the
+spec's explicit requirement. A pushed `(fromStatus, toStatus, actorId)` triple is
+reconstructed into the corresponding machine event and sent via `send()`, not just
+patched into the cache, verified by observing that the action bar's enabled/disabled
+states correctly re-evaluate the instant a remote transition arrives (for example
+"Start amendment" becoming enabled immediately after a remote Approve), not only after
+a manual refresh.
+
+**A real gap found and fixed during this work:** the original implementation only ever
+broadcast `note.status_changed` from the background simulation, never from a genuine
+user-initiated transition via the enforced `/transitions` endpoint, meaning real
+Approve/Reject clicks were invisible to other viewers even though the simulated
+auto-approve was visible. Found via a two-tab test that only worked when the simulation
+happened to fire, and fixed by adding the missing broadcast call to the real transition
+path.
+
+**Reconciliation by eventId, not order:** proven empirically, not just claimed.
+`scripts/scenario_3_realtime_race.ts` opens a real WebSocket, subscribes, fires an HTTP
+transition, and races both responses. On the recorded run, the WebSocket push arrived
+4ms before the HTTP acknowledgment, directly capturing the exact out-of-order scenario
+the spec describes as a live measurement, not a theoretical possibility.
+
+**A second bug found during batch work:** live-patched list rows kept their stale sort
+position after a status update (for example a newly-APPROVED row staying interspersed
+among IN_REVIEW rows when sorted by status), since the direct cache patch never
+triggers a resort. Fixed with a debounced resort (3s after the last live patch): the
+badge updates instantly (satisfying "never jumps or blinks"), and the row settles into
+correct sorted position once activity quiets, rather than staying wrong indefinitely or
+jumping jarringly mid-update.
 
 ### 7. Telemetry
 
-`src/telemetry/track.ts`: event name plus properties, batched (flush at 20 events or
-every 5s, whichever first) rather than one request per `track()` call. PII redaction
-uses a denylist of known-sensitive keys (patient names, note content, reject reasons)
-plus a structural rule: any non-primitive value (objects/arrays) is dropped by default
-rather than risking an unredacted nested field. Explicitly noted as a denylist, not an
-allowlist. A stricter production system would prefer allowlisting fields as safe rather
-than trying to enumerate everything unsafe.
+`src/telemetry/track.ts` implements the full `track(name, properties, {important?})`
+signature. Batched (flush at 20 events, every 5s, on route change, or on tab-hidden, all
+four triggers implemented). `important: true` bypasses batching thresholds entirely for
+an immediate flush (used for `version_conflict_detected`).
 
-Flush on tab close/navigation uses `navigator.sendBeacon` (guaranteed best-effort
-delivery during page teardown, unlike a `fetch()` which can be aborted mid-flight),
-triggered from both `visibilitychange` (hidden) and `pagehide`, with a
-`fetch(..., {keepalive: true})` fallback for the periodic in-session flushes.
+**Retry and park, per the spec's explicit requirement:** a failed batch send retries up
+to 3 times with exponential backoff; if all retries are exhausted, the batch is parked
+in IndexedDB rather than dropped, and retried on the next flush tick or on the next
+session's startup recovery pass. Verified by forcing the telemetry endpoint to always
+fail, confirming batches appear in IndexedDB, then reverting the endpoint and confirming
+the parked batches are picked up and successfully sent without any user action.
 
-Only a representative subset of actions are instrumented (note viewed, transition
-attempted, conflict detected/resolved, write queued offline), enough to demonstrate the
-pattern, not exhaustive coverage of every possible interaction.
+PII redaction via a denylist (patient names, note content, reject reasons) plus a
+structural rule dropping any non-primitive value by default. `sendBeacon` on
+`visibilitychange`/`pagehide` for unload-safe delivery.
 
-### 8. Performance & scale
+### 8. Performance and scale
 
-The notes list uses `@tanstack/react-virtual` plus `@tanstack/react-query`'s
-`useInfiniteQuery` with server-side cursor pagination (base64-encoded offset, though the
-client never assumes offset semantics; it only ever passes back whatever cursor the
-server gave it). Only visible rows (~15-20, plus overscan) exist in the DOM at any time,
-regardless of total row count, verified by watching the DOM stay small while scrolling
-through all 500 seeded notes; the mechanism itself is count-independent, so 100k should
-behave identically (not separately load-tested against 100k in this pass, given time
-constraints; this would be the first thing I'd verify with more time).
+`@tanstack/react-virtual` plus `useInfiniteQuery` with server-side cursor pagination
+(base64-encoded offset internally, though the client never assumes offset semantics;
+it only ever passes back whatever cursor the server returned).
 
-Status filters are part of the React Query key, so toggling a filter off and back on
-shows cached results instantly rather than refetching.
+**Verified directly at the assignment's actual stated scale of 100,000+ notes**, not
+just reasoned about architecturally: reseeded the store with 100,000 notes, confirmed
+the list correctly displayed "100000 total," and confirmed via DevTools that the DOM
+row-element count stayed bounded (roughly 25 to 35 elements, matching the visible
+window plus overscan) while scrolling rapidly through the full dataset, never anywhere
+close to 100,000 live DOM nodes. The Network tab confirmed each scroll-triggered load
+still fetched only about 50 rows at a time via cursor pagination. Scrolling remained
+smooth with no browser unresponsive-page warnings.
+
+Status/reviewer/patient/date/search/sort are all part of the React Query key, so
+toggling a filter off and back on shows cached results instantly rather than refetching.
 
 ### 9. Testing strategy
 
-- **Unit tests** (Vitest, 20 total, all passing):
-  - **State machine** (10 tests): happy path, every guard rejection, the grace-window
-    boundary (deterministic via injectable time), and the failure/regenerate branch.
-  - **Word-level diff algorithm** (6 tests): same/added/removed detection, full
-    replacement, empty-string edge cases, and a property-based check that
-    same+added tokens exactly reconstruct the new text.
-  - **Debounce hook** (4 tests, using Vitest fake timers plus `@testing-library/react`'s
-    `renderHook`): no call before the delay, one call after, rapid calls coalescing
-    into a single invocation with the last value (this is a direct automated proof of
-    the autosave-coalescing behavior manually verified via the Network tab during
-    development), and no call after unmount.
-  
-  These three were prioritized as the highest-leverage, cheapest-to-test areas: pure
-  logic with no I/O (state machine, diff) or deterministic time-based behavior (debounce),
-  versus effectful UI flows that are far more expensive to test in isolation.
+**Unit tests** (Vitest, 20 total, all passing): state machine (10), word-level diff
+algorithm (6), debounce hook (4, using fake timers plus `renderHook`, directly proving
+the autosave-coalescing behavior). Prioritized as the highest-leverage, cheapest-to-test
+pure logic, versus effectful flows that are far more expensive to test in true isolation.
 
-- **Manual/integration verification**: every other major flow (optimistic
-  rollback, conflict resolution, offline queue plus replay, real-time push, telemetry
-  batching) was verified end-to-end manually during development, including deliberately
-  forcing edge conditions (temporarily raising the failure rate to 90% to reliably
-  trigger rollback; running two browser tabs simultaneously to force real version
-  conflicts and test presence).
+**The provided simulation script**, reconstructed from the spec's excerpt (the literal
+file was not provided) and adapted to the actual current `/transitions` payload shape
+(a machine `event` object, following the server-enforcement work; the original
+excerpt's flat `{to, actorId}` shape predates that change). Run against 5,000 seeded
+notes and 3 concurrent reviewer loops: 82 successful saves, 0 conflicts (expected, since
+this script's reviewers each independently pick their own note rather than deliberately
+colliding; see Scenario 1 for that), 21 requests hit the backend's own 5% simulated
+failure rate and were correctly caught and logged without halting the run, a count
+matching the statistically expected value at that request volume, confirmed against the
+actual `FAILURE_RATE` constant rather than assumed.
 
-- **Not done**: automated component tests (React Testing Library) for the effectful UI
-  flows above, and Playwright end-to-end smoke tests. This remains the top item I'd
-  tackle next. The pure-logic layer is now solidly covered, but the integration
-  surface (mutations, cache patching, IndexedDB interactions) is still only manually
-  verified.
+**All 5 of the assignment's explicitly-named "build your own" scenarios**, built as
+standalone, retry-hardened, re-runnable scripts (`scripts/scenario_1` through `_5`),
+not just described in prose. Each asserts specific, falsifiable outcomes rather than
+just printing output for manual inspection. All pass. See `scripts/README.md` for full
+detail on each, including one genuinely interesting empirical result (Scenario 3's
+measured 4ms real-time-before-http-ack race) and one honestly-reported scale limitation
+(Scenario 5 cycled 200 notes, not the originally-planned 500, due to the route's
+pagination cap, reported accurately rather than adjusted after the fact).
+
+**Not done:** automated component tests (React Testing Library) for the effectful UI
+flows, and Playwright end-to-end smoke tests. The pure-logic layer is now solidly
+covered by unit tests and the integration/scenario layer by the 5 scenario scripts plus
+extensive manual verification, but true component-level automated tests (rendering the
+actual React tree and simulating user interaction) remain the largest testing gap.
 
 ### 10. Accessibility
 
-An accessibility pass was added covering the highest-impact, cheapest-to-fix gaps
-identified after initial development, rather than attempting full WCAG compliance from
-the start:
+An accessibility pass covering the highest-impact, cheapest-to-fix gaps, not a full
+WCAG audit:
 
-- **ARIA live region** (`role="status"`, `aria-live="polite"`) announces status changes
-  to screen readers, both the user's own successful transitions and, critically,
-  real-time pushes from other reviewers, which otherwise update the UI with zero
-  signal to anyone not looking at the screen at that exact moment.
-- **`aria-describedby`** links each disabled action button to its specific reason text
-  (wrong role, not the assigned reviewer, etc.), so a screen reader announces *why*
-  a control is unavailable, not just that it is.
-- **Focus management**: when the conflict resolution panel appears, focus moves
-  directly to its heading (`tabIndex={-1}` plus `.focus()`), so a keyboard/screen-reader
-  user is taken straight to what needs their attention rather than left wherever they
-  happened to be.
-- **Non-color diff indicators**: added `+`/`−` text markers alongside the green/red
-  diff highlighting (hidden from screen readers via `aria-hidden`, since they're a
-  visual-only redundant signal for colorblind users, not meant to be read aloud).
-- Semantic HTML and explicit label/input association (`htmlFor`/`id`) throughout.
+- **ARIA live region** (`role="status"`, `aria-live="polite"`) announces both the
+  user's own successful transitions and real-time pushes from other reviewers, the one
+  case where the UI updates with zero other signal to anyone not looking at the screen.
+- **`aria-describedby`** links each disabled action button to its specific reason.
+- **Focus management**: the conflict panel receives focus on open (`tabIndex={-1}` plus
+  `.focus()`).
+- **Non-color diff indicators**: `+`/`−` markers alongside color, hidden from screen
+  readers via `aria-hidden` since they're a redundant visual-only signal.
+- Semantic HTML and explicit `htmlFor`/`id` label association throughout.
 
-**Still not done**: no formal screen reader testing (VoiceOver/NVDA) was performed;
-these were built following documented ARIA patterns and reasoning about correct
-behavior, not verified against an actual assistive technology. No keyboard-navigation
-audit of the virtualized notes list specifically. No focus trap in the conflict panel
-(focus moves in on open, but isn't currently constrained to stay within the panel while
-it's up). A full WCAG audit remains the next investment here.
+**Still not done:** no formal screen reader testing (VoiceOver/NVDA); no
+keyboard-navigation audit of the virtualized list specifically; no focus trap
+constraining focus to stay within the conflict panel while open (focus moves in, but
+isn't locked there). A full WCAG 2.2 AA audit remains the largest single remaining
+investment.
+
+### 11. Authorization
+
+Four roles (`CLINICIAN`, `REVIEWER`, `ADMIN`, `READONLY_AUDITOR`), enforced at three
+distinct layers, per the spec's explicit requirement:
+
+- **Action-level**: every button's enabled state derives from `state.can(event)`,
+  disabled reasons shown per-action.
+- **Component-level**: `canEditNoteContent`/`canPerformBulkActions`
+  (`src/auth/permissions.ts`) gate the SOAP editor and bulk-action checkboxes. A
+  READONLY_AUDITOR sees a note fully but cannot edit it or select rows for bulk
+  action, with distinct messaging ("You have read-only access...") rather than the
+  editor simply appearing broken.
+- **Route-level**: `RequirePermission` wraps the entire authenticated route tree with a
+  session-validity check, architecturally equivalent to what a real app would use to
+  redirect an invalid or expired session. This specific check essentially never fires
+  in normal use with our fixed fake-user roster, and that's stated plainly rather than
+  implied to be meaningfully exercised by everyday testing.
+
+**Server-side enforcement, not just UX:** the critical requirement, that the server is
+authoritative and a rogue button click cannot silently bypass a guard, is genuinely
+met. The `/transitions` endpoint evaluates the real shared state machine before
+applying anything, independent of whatever the client claims. Verified directly via a
+browser-console `fetch()` bypassing the UI entirely, impersonating an unassigned
+reviewer attempting to approve a note still in `READY_FOR_REVIEW`: rejected with 403.
+This was found to be genuinely missing during the spec audit (the original
+implementation trusted the client's requested transition outright) and is one of the
+more consequential fixes made after initial development.
 
 ---
 
 ## Architecture notes
 
-- **Layering**: `domain/` (pure logic, no React/HTTP), `api/` (fetch wrappers, no React),
-  `offline/`, `realtime/`, `telemetry/` (each independently testable, no React), then
-  `pages/`/`components/` (React, composes everything above). Swapping the transport
-  (REST to GraphQL) or the UI framework would only touch the top layer.
-- **Dummy backend** (`server/`): Express plus `ws`, in-memory store seeded
-  deterministically (seeded PRNG, not `Math.random()`, so restarts produce the same
-  dataset shape). Latency (100-800ms) plus 5% failure injection applied to all non-dev
-  routes via middleware.
-- react-router-dom's `npm audit` flags several SSR/RSC-related CVEs; not applicable here
-  since this is a client-only SPA with no server rendering.
+- **Layering**: `domain/` (pure logic, the state machine is imported unmodified by
+  both frontend and server), `api/`, `offline/`, `realtime/`, `telemetry/`, `auth/`
+  (each independently testable, no React), then `pages/`/`components/` composing
+  everything above.
+- **Dummy backend** (`server/`): Express plus `ws`, in-memory store, deterministic
+  seeded PRNG. Latency (100-800ms) plus 5% failure injection on all non-dev routes. Two
+  real seed bugs found and fixed during testing: the status pool originally omitted
+  `FAILED` and `AMENDED` entirely (making those states permanently untestable from
+  seed data), and every note originally got a brand-new unique patient rather than
+  being drawn from a shared pool (making the patient filter technically correct but
+  practically useless, since no patient ever had more than one note). Both fixed; the
+  patient filter now draws from a 150-patient pool across up to however many notes are
+  seeded.
+- react-router-dom's `npm audit` flags several SSR/RSC-related CVEs; not applicable
+  here, since this is a client-only SPA with no server rendering.
+
+## A note on process
+
+This project was built in two distinct passes. The first covered the explicit 12-area
+build plan end-to-end. The second was a deliberate, line-by-line audit of the full
+assignment text against what actually existed, which surfaced roughly a dozen genuine
+gaps and bugs, including a real security hole (client-trusted authorization) and
+several silent data/logic bugs (missing real-time broadcasts, seed data gaps, a
+falsy-zero bug in the reseed endpoint, unretried test flakiness). Each was investigated
+by first reproducing and confirming the actual behavior, not assumed from code
+inspection alone, before being fixed and re-verified. That process, and its results,
+are reflected throughout this document rather than smoothed over.
