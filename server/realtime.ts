@@ -143,7 +143,7 @@ export function attachRealtime(server: Server) {
     if (!note) return;
 
 
-    if (note.status === 'IN_REVIEW' && Math.random() < 0) {
+    if (note.status === 'IN_REVIEW' && Math.random() < 0.3) {
       const fromStatus = note.status;
       note.status = 'APPROVED';
       note.updatedAt = new Date().toISOString();
