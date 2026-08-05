@@ -451,7 +451,9 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
         };
       });
 
-      // Emit the local optimistic ReviewEvent immediately.
+      // Emit the local optimistic ReviewEvent immediately, per spec:
+      // "Emit a local ReviewEvent immediately on optimistic transition;
+      // reconcile with the server-assigned eventId on ack."
       const tempEvent: ReviewEvent = {
         id: `optimistic_${Date.now()}`,
         noteId: note.id,
@@ -467,11 +469,25 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
 
       return { previousNote, tempEventId: tempEvent.id };
     },
-    onSuccess: (_result, variables, context) => {
+    onSuccess: (result, variables, context) => {
       setAnnouncement(`Note transitioned to ${EVENT_TO_STATUS[variables.event.type]}`);
-      // Reconcile: the real refetch (triggered in onSettled) will bring
-      // back the server's actual event with its real id — drop our
-      // temporary placeholder now that the real one is on its way in.
+
+      // Literal eventId reconciliation: the ack response carries the
+      // server-assigned ReviewEvent (result.event, with its real id).
+      // Swap the temp placeholder for that exact real event directly in
+      // the cache — this is the actual reconciliation the spec asks
+      // for, not just "clear the temp and hope the next refetch has it."
+      const realEvent = result.event as ReviewEvent;
+      queryClient.setQueryData<NoteDetail>(['note', note.id], (old) => {
+        if (!old) return old;
+        const alreadyPresent = old.review.events.some((e) => e.id === realEvent.id);
+        return {
+          ...old,
+          review: {
+            events: alreadyPresent ? old.review.events : [...old.review.events, realEvent],
+          },
+        };
+      });
       setOptimisticEvents((prev) => prev.filter((e) => e.id !== context?.tempEventId));
     },
     onError: (err, _variables, context) => {
@@ -482,6 +498,10 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
       alert(`Action failed: ${(err as Error).message}. Reverted.`);
     },
     onSettled: () => {
+      // Still invalidate for full reconciliation of anything else
+      // (assignedReviewer, status edge cases) — but the review-events
+      // reconciliation above no longer depends on this round-trip to
+      // show the correct real event; it's already there synchronously.
       queryClient.invalidateQueries({ queryKey: ['note', note.id] });
     },
   });
