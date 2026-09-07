@@ -326,7 +326,7 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
     value: note.status as NoteStatus,
     context: {
       assignedReviewerId: note.assignedReviewer?.id ?? null,
-      approvedAt: note.status === 'APPROVED' ? Date.now() : null,
+      approvedAt: note.approvedAt,
     },
   });
 

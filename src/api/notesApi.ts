@@ -85,6 +85,7 @@ export interface NoteDetail {
   id: string;
   patient: { id: string; displayName: string };
   status: string;
+  approvedAt: number | null;
   assignedReviewer: { id: string; displayName: string; role: string } | null;
   currentVersion: {
     id: string;

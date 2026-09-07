@@ -1,6 +1,6 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import type { Server } from 'http';
-import { notes } from './store';
+import { getNote, saveNote } from './store';
 
 /**
  * The real-time channel. Matches the assignment's spec: "One channel per
@@ -130,7 +130,7 @@ export function attachRealtime(server: Server) {
   // status — this is what makes "server-pushed transitions arriving while
   // you're looking at a note" an actual thing you can observe and handle,
   // not just a theoretical scenario.
-  setInterval(() => {
+    setInterval(async () => {
     const subscribedNoteIds = new Set<string>();
     for (const client of clients) {
       client.subscribedNoteIds.forEach((id) => subscribedNoteIds.add(id));
@@ -139,14 +139,14 @@ export function attachRealtime(server: Server) {
 
     const ids = Array.from(subscribedNoteIds);
     const noteId = ids[Math.floor(Math.random() * ids.length)];
-    const note = notes.get(noteId);
+    const note = await getNote(noteId);
     if (!note) return;
-
 
     if (note.status === 'IN_REVIEW' && Math.random() < 0.3) {
       const fromStatus = note.status;
       note.status = 'APPROVED';
       note.updatedAt = new Date().toISOString();
+      await saveNote(note);
       broadcastToSubscribers(noteId, {
         type: 'note.status_changed',
         noteId,
