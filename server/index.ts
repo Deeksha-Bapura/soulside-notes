@@ -25,6 +25,7 @@ import { attachRealtime } from './realtime';
 import { createActor } from 'xstate';
 import { noteMachine, type NoteMachineEvent } from '../src/domain/noteMachine';
 import { connectToDatabase } from './db';
+import { connectToRedis, getRedisClient } from './redis';
 
 const app = express();
 let realtimeApi: ReturnType<typeof attachRealtime> | undefined;
@@ -39,6 +40,7 @@ app.use(express.json());
 // actually being there.
 async function startServer() {
   const db = await connectToDatabase();
+  await connectToRedis();
 
   // Only seed if the database is genuinely empty — this is what makes
   // persistence actually meaningful. Unconditionally reseeding on every
@@ -71,6 +73,17 @@ async function startServer() {
   // --- GET /api/notes : cursor-paginated list ---
   app.get('/api/notes', async (req, res) => {
     const limit = Math.min(Number(req.query.limit) || 50, 200);
+    // Build a cache key from the ENTIRE query string — different filter/
+    // sort/pagination combinations are genuinely different results, so
+    // the cache key must capture all of them, not just some.
+    const cacheKey = `notes:${req.originalUrl}`;
+    const redis = getRedisClient();
+    const cached = await redis.get(cacheKey);
+    if (cached) {
+      res.setHeader('X-Cache', 'HIT');
+      res.json(JSON.parse(cached));
+      return;
+    }
     const cursorParam = req.query.cursor as string | undefined;
     const statusParam = req.query.status as string | undefined;
     const statusFilter = statusParam ? statusParam.split(',') : null;
@@ -174,11 +187,21 @@ async function startServer() {
       })
     );
 
-    res.json({
+    const responseBody = {
       cursor: { next: nextCursor, hasMore },
       items,
       meta: { total: all.length, returned: page.length, generatedAt: new Date().toISOString() },
-    });
+    };
+
+    // Cache for 5 seconds — short enough that a status change or new note
+    // becomes visible almost immediately, long enough to meaningfully
+    // reduce load if the same filtered view is requested repeatedly
+    // (e.g. multiple users viewing the same filtered list, or a single
+    // user's list re-rendering rapidly during virtualized scrolling).
+    await redis.setEx(cacheKey, 5, JSON.stringify(responseBody));
+
+    res.setHeader('X-Cache', 'MISS');
+    res.json(responseBody);
   });
 
   // --- POST /api/notes/bulk-assign : bulk-assign a reviewer to multiple notes ---
