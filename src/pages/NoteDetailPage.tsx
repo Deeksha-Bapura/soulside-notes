@@ -520,9 +520,10 @@ function NoteDetailView({ note }: { note: NoteDetail }) {
       clearQueuedWritesForNote(note.id).then(() => setPendingCount(0));
       useSyncStore.getState().clearConflict(note.id);
       queryClient.invalidateQueries({ queryKey: ['note', note.id] });
+      flushPendingSaveIfAny();
     },
     onError: async (err, variables) => {
-      const maybeConflict = err as VersionConflict;
+      const maybeConflict = err as unknown as VersionConflict;
       if (maybeConflict?.error === 'version_conflict') {
         setConflict(maybeConflict);
         track('version_conflict_detected', { noteId: note.id });

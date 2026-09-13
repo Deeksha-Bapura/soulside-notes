@@ -5,7 +5,7 @@ import { useSearchParams, Link } from 'react-router-dom';
 import { fetchNotes, bulkAssignReviewer, bulkRegenerateNotes } from '../api/notesApi';
 import type { NoteStatus } from '../domain/types';
 import { useDebouncedCallback } from '../hooks/useDebouncedCallback';
-import { useCurrentUser, FAKE_USERS } from '../auth/CurrentUserContext';
+import { useCurrentUser } from '../auth/CurrentUserContext';
 import { useVisibleNotesRealtime } from '../realtime/useVisibleNotesRealtime';
 import { canPerformBulkActions } from '../auth/permissions';
 

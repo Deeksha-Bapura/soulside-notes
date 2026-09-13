@@ -17,7 +17,7 @@ export function canPerformBulkActions(role: Role): boolean {
   return role === 'ADMIN' || role === 'REVIEWER' || role === 'CLINICIAN';
 }
 
-export function canAccessNoteDetail(role: Role): boolean {
+export function canAccessNoteDetail(_role: Role): boolean {
   // Every role can VIEW a note (including the auditor, whose entire job
   // is read-only review) — this guard exists as a named seam for future
   // restriction, and to make the "route-level guard" layer real and
