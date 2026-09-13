@@ -9,7 +9,26 @@ import { MongoClient, type Db } from 'mongodb';
  * adding on top.
  */
 
-const MONGO_URL = process.env.MONGO_URL ?? 'mongodb://127.0.0.1:27017';
+import { readFileSync } from 'fs';
+
+function buildMongoUrl(): string {
+  // If MONGO_URL is set directly (e.g. local dev without Docker), use it as-is.
+  if (process.env.MONGO_URL) return process.env.MONGO_URL;
+
+  // Otherwise, assemble from pieces + a Docker secret file (Compose path).
+  const host = process.env.MONGO_HOST ?? '127.0.0.1';
+  const user = process.env.MONGO_USER;
+  const passwordFile = process.env.MONGO_PASSWORD_FILE;
+
+  if (user && passwordFile) {
+    const password = readFileSync(passwordFile, 'utf-8').trim();
+    return `mongodb://${user}:${encodeURIComponent(password)}@${host}:27017/?authSource=admin`;
+  }
+
+  return `mongodb://${host}:27017`;
+}
+
+const MONGO_URL = buildMongoUrl();
 const DB_NAME = process.env.MONGO_DB_NAME ?? 'soulside';
 
 let client: MongoClient | null = null;
