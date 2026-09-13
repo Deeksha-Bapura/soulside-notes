@@ -9,7 +9,7 @@ import { MongoClient, type Db } from 'mongodb';
  * adding on top.
  */
 
-const MONGO_URI = process.env.MONGO_URI ?? 'mongodb://localhost:27017';
+const MONGO_URL = process.env.MONGO_URL ?? 'mongodb://127.0.0.1:27017';
 const DB_NAME = process.env.MONGO_DB_NAME ?? 'soulside';
 
 let client: MongoClient | null = null;
@@ -18,11 +18,11 @@ let db: Db | null = null;
 export async function connectToDatabase(): Promise<Db> {
   if (db) return db;
 
-  client = new MongoClient(MONGO_URI);
+  client = new MongoClient(MONGO_URL);
   await client.connect();
   db = client.db(DB_NAME);
 
-  console.log(`Connected to MongoDB at ${MONGO_URI}, database "${DB_NAME}"`);
+  console.log(`Connected to MongoDB at ${MONGO_URL}, database "${DB_NAME}"`);
   return db;
 }
 

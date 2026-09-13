@@ -1,0 +1,36 @@
+# Custom base image for the API service — a slim Node image rather than
+# the full default, since we don't need build tools, only a runtime.
+FROM node:20-alpine AS base
+
+WORKDIR /app
+
+# Copy only the dependency manifests first. Docker caches each instruction
+# as a layer; as long as package.json/package-lock.json don't change,
+# this layer (and the expensive npm install below) gets reused on
+# subsequent builds instead of re-running every time source code changes.
+COPY package.json package-lock.json ./
+
+# Install ALL dependencies (not --production), since tsx and TypeScript
+# itself are devDependencies but are needed at runtime to actually run
+# the server, which is written in TypeScript with no separate build step.
+RUN npm ci
+
+# Now copy the actual source code — this layer changes often, but since
+# it comes AFTER the install step, editing source files never invalidates
+# the cached npm install layer above.
+COPY server ./server
+COPY src ./src
+COPY tsconfig.server.json ./
+
+# Document which port this container listens on. This doesn't actually
+# publish the port — that's a docker-compose/docker run concern — it's
+# metadata for anyone reading or inspecting this image.
+EXPOSE 3001
+
+# Basic healthcheck: confirm the API actually responds, not just that
+# the container process is running. A process can be "up" while its
+# server has crashed internally or is stuck.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD node -e "require('http').get('http://localhost:3001/api/notes', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
+
+CMD ["npx", "tsx", "server/index.ts"]
