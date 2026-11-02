@@ -60,8 +60,16 @@ spec:
           image: {{ include "soulside.image" (dict "ctx" . "image" .Values.mongo.image) }}
           imagePullPolicy: {{ .Values.mongo.image.pullPolicy }}
           env:
-            - name: MONGO_INITDB_ROOT_USERNAME
+  image:
+    repository: mongo
+    # 8.2, not 8.0: MongoDB 8.0 refuses to start on Linux kernels 6.19-7.0
+    # (MongoDB issue SERVER-121912), which GitHub's runners and newer nodes use.
+    tag: "8.2"            - name: MONGO_INITDB_ROOT_USERNAME
               value: {{ .Values.mongo.rootUser | quote }}
+            # Workaround for MongoDB's startup check on Linux kernels 6.19-7.0     <- new
+            # (SERVER-121912). Harmless on other kernels.                           <- new
+            - name: GLIBC_TUNABLES                                                  <- new
+              value: glibc.pthread.rseq=1                                           <- new
             - name: MONGO_INITDB_ROOT_PASSWORD_FILE
               value: /etc/soulside/secrets/mongo_root_password
           ports:

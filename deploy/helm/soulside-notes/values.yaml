@@ -57,7 +57,9 @@ web:
 mongo:
   image:
     repository: mongo
-    tag: "8.0"
+    # 8.2, not 8.0: MongoDB 8.0 refuses to start on Linux kernels 6.19-7.0
+    # (MongoDB issue SERVER-121912), which GitHub's runners and newer nodes use.
+    tag: "8.2"
     pullPolicy: IfNotPresent
   rootUser: root
   auth:

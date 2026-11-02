@@ -135,3 +135,7 @@ The deploy role can only manage the `soulside` namespace.
 - **The Mongo password** is generated on first install and reused on every
   upgrade (Mongo only reads it when initialising an empty volume). The Secret
   is kept on `helm uninstall` for the same reason.
+- **Why mongo:8.2 and `GLIBC_TUNABLES`:** MongoDB 8.0 refuses to start on
+  Linux kernels 6.19 to 7.0 (MongoDB issue SERVER-121912), which GitHub's
+  runners use. 8.2 isn't affected, and the environment variable is a further
+  safeguard.
