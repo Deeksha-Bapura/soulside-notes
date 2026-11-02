@@ -24,13 +24,44 @@ import { createServer } from 'http';
 import { attachRealtime } from './realtime';
 import { createActor } from 'xstate';
 import { noteMachine, type NoteMachineEvent } from '../src/domain/noteMachine';
-import { connectToDatabase } from './db';
-import { connectToRedis, getRedisClient } from './redis';
+import { connectToDatabase, closeDatabaseConnection, getDb } from './db';
+import { connectToRedis, getRedisClient, closeRedisConnection } from './redis';
 
 const app = express();
 let realtimeApi: ReturnType<typeof attachRealtime> | undefined;
 app.use(cors());
 app.use(express.json());
+
+// --- Health endpoints (used by Docker healthchecks and Kubernetes probes) ---
+// Registered before everything else, and in particular before the latency/
+// failure-injection middleware: a probe that randomly fails 5% of the time
+// would make Kubernetes restart healthy pods or pull them out of rotation.
+let shuttingDown = false;
+
+// Liveness: "is the process alive and its event loop responsive?" No
+// dependency checks here: if Mongo goes down, restarting the API won't fix
+// it, so liveness must not depend on Mongo or Redis.
+app.get('/healthz', (_req, res) => {
+  res.json({ status: 'ok' });
+});
+
+// Readiness: "should this pod receive traffic right now?" False until the
+// database is connected and seeded, while Mongo or Redis is unreachable, and
+// once shutdown has started, so Kubernetes stops routing to the pod before
+// it exits.
+app.get('/readyz', async (_req, res) => {
+  if (shuttingDown) {
+    res.status(503).json({ status: 'shutting_down' });
+    return;
+  }
+  try {
+    await getDb().command({ ping: 1 });
+    await getRedisClient().ping();
+    res.json({ status: 'ready' });
+  } catch (err) {
+    res.status(503).json({ status: 'unavailable', error: (err as Error).message });
+  }
+});
 
 // Seed a small default dataset on boot so the server is usable immediately
 // without waiting for a POST /api/dev/seed call. We connect to the
@@ -454,6 +485,30 @@ async function startServer() {
   httpServer.listen(PORT, () => {
     console.log(`Dummy backend listening on http://localhost:${PORT}`);
   });
+
+  // Graceful shutdown. Kubernetes sends SIGTERM before killing a pod (on a
+  // rolling update, scale-down or node drain): fail readiness, stop taking
+  // new connections, close sockets and DB clients, then exit.
+  const shutdown = (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`${signal} received, shutting down gracefully`);
+
+    // Hard stop in case something hangs; stays under the pod's
+    // terminationGracePeriodSeconds (30s by default).
+    setTimeout(() => process.exit(1), 20_000).unref();
+
+    realtimeApi?.close();
+    httpServer.close(async () => {
+      try {
+        await Promise.allSettled([closeDatabaseConnection(), closeRedisConnection()]);
+      } finally {
+        process.exit(0);
+      }
+    });
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 startServer().catch((err) => {

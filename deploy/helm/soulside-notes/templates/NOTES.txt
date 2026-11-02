@@ -1,0 +1,23 @@
+Soulside Notes is deploying to namespace "{{ .Release.Namespace }}".
+
+Watch the pods come up (Mongo initialises on first boot, then the API seeds 500 notes):
+  kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }} -w
+
+Run the smoke test once everything is Ready:
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }}
+
+{{- if .Values.ingress.enabled }}
+{{- if eq .Values.ingress.className "alb" }}
+
+Get the load balancer address (takes a minute or two to provision):
+  kubectl get ingress {{ include "soulside.fullname" . }} -n {{ .Release.Namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+{{- else }}
+
+Open the app through the {{ .Values.ingress.className }} ingress controller
+{{- if .Values.ingress.host }} at http://{{ .Values.ingress.host }}/{{ else }} (local kind cluster: http://localhost:8080){{ end }}
+{{- end }}
+{{- else }}
+
+No Ingress enabled. Port-forward instead:
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "soulside.fullname" . }}-web 8080:{{ .Values.web.port }}
+{{- end }}

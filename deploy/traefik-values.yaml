@@ -1,0 +1,15 @@
+# Traefik Ingress controller settings for kind clusters, shared by
+# infra/local (Terraform) and the CI smoke test so both behave the same.
+ingressClass:
+  enabled: true
+  isDefaultClass: true
+service:
+  spec:
+    type: NodePort
+ports:
+  web:
+    # kind publishes this NodePort on the host (see deploy/kind-config.yaml).
+    nodePort: 30080
+  websecure:
+    expose:
+      default: false

@@ -1,6 +1,7 @@
 # Custom base image for the API service — a slim Node image rather than
 # the full default, since we don't need build tools, only a runtime.
-FROM node:20-alpine AS base
+# Node 22 LTS: Node 20 reached end of life in April 2026.
+FROM node:22-alpine AS base
 
 WORKDIR /app
 
@@ -27,10 +28,18 @@ COPY tsconfig.server.json ./
 # metadata for anyone reading or inspecting this image.
 EXPOSE 3001
 
-# Basic healthcheck: confirm the API actually responds, not just that
-# the container process is running. A process can be "up" while its
-# server has crashed internally or is stuck.
+# Liveness check: is the process up and responding? Uses /healthz, which
+# skips the simulated latency/5% failure middleware, so a healthy container
+# never gets marked unhealthy by a coin flip. (Kubernetes uses its own
+# probes and ignores this; it's for plain Docker/Compose.)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:3001/api/notes', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
+  CMD node -e "require('http').get('http://localhost:3001/healthz', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
 
-CMD ["npx", "tsx", "server/index.ts"]
+# Run as the image's built-in unprivileged "node" user (uid 1000) instead of
+# root. Kubernetes enforces this with runAsNonRoot in the Helm chart.
+USER node
+
+# Run node directly (with tsx as a loader) rather than through npx, so node
+# is PID 1 and receives SIGTERM itself. That lets the graceful-shutdown
+# handler in server/index.ts run when Kubernetes stops the pod.
+CMD ["node", "--import", "tsx", "server/index.ts"]

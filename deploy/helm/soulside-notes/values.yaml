@@ -1,0 +1,112 @@
+# Default values for soulside-notes.
+#
+# Compose service  ->  Kubernetes object in this chart
+#   web            ->  Deployment + Service            (templates/web.yaml)
+#   api            ->  Deployment + Service            (templates/api.yaml)
+#   mongo          ->  StatefulSet + headless Service  (templates/mongo.yaml)
+#   redis          ->  StatefulSet + headless Service  (templates/redis.yaml)
+#   proxy (nginx)  ->  Ingress                         (templates/ingress.yaml)
+#   secrets:       ->  Secret                          (templates/secret.yaml)
+#   volumes:       ->  PersistentVolumeClaims (volumeClaimTemplates)
+#   healthcheck:   ->  liveness / readiness / startup probes
+#   logging: (json-file rotation) -> handled by the kubelet (containerLogMaxSize)
+
+imagePullSecrets: []
+# - name: ghcr-pull
+
+api:
+  image:
+    repository: ghcr.io/deeksha-bapura/soulside-notes-api
+    tag: ""            # defaults to .Chart.AppVersion
+    pullPolicy: IfNotPresent
+  # Keep at 1. The WebSocket server, its event buffer/sequence counter and the
+  # simulated auto-approve timer all live in process memory, so two replicas
+  # would each broadcast only to their own clients. Scaling out needs a shared
+  # fan-out first (for example Redis pub/sub between pods).
+  replicas: 1
+  port: 3001
+  mongoUser: root
+  mongoDbName: soulside
+  extraEnv: []
+  resources:
+    requests:
+      cpu: 100m
+      memory: 192Mi
+    limits:
+      memory: 512Mi
+  service:
+    annotations: {}
+
+web:
+  image:
+    repository: ghcr.io/deeksha-bapura/soulside-notes-web
+    tag: ""
+    pullPolicy: IfNotPresent
+  # Static files only, no state: safe to run several replicas.
+  replicas: 2
+  port: 80
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+  service:
+    annotations: {}
+
+mongo:
+  image:
+    repository: mongo
+    tag: "8.0"
+    pullPolicy: IfNotPresent
+  rootUser: root
+  auth:
+    # Name of an existing Secret with the key `mongo-root-password`.
+    # Leave empty to let the chart create one.
+    existingSecret: ""
+    # Used only when the chart creates the Secret. Empty = generate a random
+    # password on first install and keep it on every upgrade (MongoDB only
+    # reads the root password when it initialises an empty data directory, so
+    # it must never change underneath an existing volume).
+    rootPassword: ""
+  persistence:
+    size: 2Gi
+    storageClassName: ""   # empty = cluster default (kind: standard, EKS: gp3 from Terraform)
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+redis:
+  image:
+    repository: redis
+    tag: "8.0-alpine"
+    pullPolicy: IfNotPresent
+  persistence:
+    size: 1Gi
+    storageClassName: ""
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      memory: 256Mi
+
+ingress:
+  enabled: true
+  # traefik for the local kind cluster, alb on EKS (see values-local.yaml / values-eks.yaml).
+  className: traefik
+  host: ""            # empty = match any host
+  annotations: {}
+  tls: []
+  # - secretName: soulside-tls
+  #   hosts: [notes.example.com]
+
+# Only the API pods may connect to Mongo and Redis.
+networkPolicy:
+  enabled: true
+
+podSecurity:
+  seccompProfile: RuntimeDefault

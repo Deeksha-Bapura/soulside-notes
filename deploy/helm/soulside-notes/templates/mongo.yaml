@@ -1,0 +1,129 @@
+{{- $fullname := include "soulside.fullname" . }}
+# Headless Service: gives the StatefulSet pod a stable DNS name
+# (<release>-mongo-0.<release>-mongo), the way "mongo" was the hostname on the
+# Compose network.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-mongo
+  labels:
+    {{- include "soulside.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mongo
+spec:
+  clusterIP: None
+  selector:
+    {{- include "soulside.selectorLabels" (dict "ctx" . "component" "mongo") | nindent 4 }}
+  ports:
+    - name: mongo
+      port: 27017
+      targetPort: mongo
+---
+# StatefulSet instead of a Deployment: a stable pod identity and a
+# PersistentVolumeClaim that follows the pod across restarts and reschedules
+# (the Compose `mongo-data` named volume).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $fullname }}-mongo
+  labels:
+    {{- include "soulside.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mongo
+spec:
+  serviceName: {{ $fullname }}-mongo
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "soulside.selectorLabels" (dict "ctx" . "component" "mongo") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "soulside.labels" . | nindent 8 }}
+        app.kubernetes.io/component: mongo
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        # Run as the image's mongodb user (999) from the start. fsGroup makes
+        # the data volume and the mounted Secret readable/writable by it.
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        {{- include "soulside.podSecurity" . | nindent 8 }}
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: mongo
+          image: {{ include "soulside.image" (dict "ctx" . "image" .Values.mongo.image) }}
+          imagePullPolicy: {{ .Values.mongo.image.pullPolicy }}
+          env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              value: {{ .Values.mongo.rootUser | quote }}
+            - name: MONGO_INITDB_ROOT_PASSWORD_FILE
+              value: /run/secrets/mongo_root_password
+          ports:
+            - name: mongo
+              containerPort: 27017
+          # First boot runs the image's init scripts (creating the root user)
+          # on a localhost-only mongod, so allow up to ~2 minutes.
+          startupProbe:
+            tcpSocket:
+              port: mongo
+            periodSeconds: 5
+            failureThreshold: 24
+          livenessProbe:
+            tcpSocket:
+              port: mongo
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Same check as the Compose healthcheck. `ping` doesn't need
+          # authentication, so the password never appears in process args.
+          readinessProbe:
+            exec:
+              command:
+                - mongosh
+                - --quiet
+                - --eval
+                - "db.adminCommand('ping').ok"
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.mongo.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /data/db
+            - name: configdb
+              mountPath: /data/configdb
+            - name: mongo-secret
+              mountPath: /run/secrets
+              readOnly: true
+      volumes:
+        - name: configdb
+          emptyDir: {}
+        - name: mongo-secret
+          secret:
+            secretName: {{ include "soulside.mongoSecretName" . }}
+            defaultMode: 0440
+            items:
+              - key: mongo-root-password
+                path: mongo_root_password
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "soulside.selectorLabels" (dict "ctx" . "component" "mongo") | nindent 10 }}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.mongo.persistence.storageClassName }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.mongo.persistence.size }}

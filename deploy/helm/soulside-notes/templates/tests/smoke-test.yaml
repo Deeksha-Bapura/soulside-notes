@@ -1,0 +1,60 @@
+{{- $fullname := include "soulside.fullname" . }}
+# `helm test <release>` runs this pod: it checks the API is ready (Mongo and
+# Redis connected), the notes endpoint returns data, and the frontend serves
+# index.html. CI runs it after every install on the throwaway kind cluster.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ $fullname }}-smoke-test
+  labels:
+    {{- include "soulside.labels" . | nindent 4 }}
+    app.kubernetes.io/component: test
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    {{- include "soulside.podSecurity" . | nindent 4 }}
+  {{- with .Values.imagePullSecrets }}
+  imagePullSecrets:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  containers:
+    - name: smoke-test
+      image: {{ include "soulside.image" (dict "ctx" . "image" .Values.api.image) }}
+      imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+      command:
+        - node
+        - -e
+        - |
+          const checks = [
+            ['api ready', 'http://{{ $fullname }}-api:{{ .Values.api.port }}/readyz', (b) => b.includes('ready')],
+            ['web index', 'http://{{ $fullname }}-web:{{ .Values.web.port }}/', (b) => b.includes('<div id="root">')],
+          ];
+          // /api/notes has simulated latency and a 5% error rate, so allow retries.
+          const notes = ['notes list', 'http://{{ $fullname }}-api:{{ .Values.api.port }}/api/notes?limit=5', (b) => JSON.parse(b).items?.length > 0];
+          (async () => {
+            for (const [name, url, ok] of [...checks, notes]) {
+              let passed = false;
+              for (let attempt = 1; attempt <= 5 && !passed; attempt++) {
+                try {
+                  const res = await fetch(url);
+                  const body = await res.text();
+                  passed = res.ok && ok(body);
+                  if (!passed) console.log(`${name}: attempt ${attempt} got ${res.status}`);
+                } catch (err) {
+                  console.log(`${name}: attempt ${attempt} failed: ${err.message}`);
+                }
+              }
+              console.log(`${passed ? 'PASS' : 'FAIL'} ${name}`);
+              if (!passed) process.exit(1);
+            }
+          })();
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]

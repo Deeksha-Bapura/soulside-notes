@@ -1,0 +1,260 @@
+name: CI/CD
+
+# Pull requests: type-check, unit tests, build both images, and deploy the
+# Helm chart to a throwaway kind cluster inside the runner to prove it works
+# end to end (including WebSockets through the Ingress).
+#
+# Merge to main: all of the above, plus push the images to GHCR and, once an
+# EKS cluster exists (repo variable EKS_CLUSTER_NAME is set), deploy them.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  IS_MAIN_PUSH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+  HELM_VERSION: v4.3.1
+  TRAEFIK_CHART_VERSION: 42.2.0
+
+jobs:
+  test:
+    name: Type-check, build and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - name: Type-check server
+        run: npx tsc --noEmit -p tsconfig.server.json
+      - name: Type-check and build frontend
+        run: npm run build
+      - name: Unit tests
+        run: npx vitest run
+
+  helm-lint:
+    name: Lint Helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - name: Lint with local and EKS values
+        run: |
+          helm lint --strict deploy/helm/soulside-notes -f deploy/helm/values-local.yaml
+          helm lint --strict deploy/helm/soulside-notes -f deploy/helm/values-eks.yaml
+
+  build:
+    name: Build ${{ matrix.component }} image
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        component: [api, web]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        if: env.IS_MAIN_PUSH == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image tags
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/soulside-notes-${{ matrix.component }}
+          tags: |
+            type=sha,format=long,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      # Pushes only on main. On PRs this still builds (and fills the layer
+      # cache the smoke-test job reuses).
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.${{ matrix.component }}
+          push: ${{ env.IS_MAIN_PUSH == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,scope=${{ matrix.component }},mode=max
+
+  kind-smoke-test:
+    name: Deploy chart to kind and smoke-test
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+
+      # Rebuild from the cache the build job just filled (seconds, not
+      # minutes) and load the images into the runner's Docker.
+      - name: Build API image (cached)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.api
+          load: true
+          tags: soulside-api:ci
+          cache-from: type=gha,scope=api
+      - name: Build web image (cached)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.web
+          load: true
+          tags: soulside-web:ci
+          cache-from: type=gha,scope=web
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1.15.1
+        with:
+          version: v0.33.0
+          cluster_name: soulside
+          config: deploy/kind-config.yaml
+
+      - uses: azure/setup-helm@v5
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Load images into kind
+        run: kind load docker-image soulside-api:ci soulside-web:ci --name soulside
+
+      - name: Install Traefik ingress controller
+        run: |
+          helm upgrade --install traefik traefik --repo https://traefik.github.io/charts \
+            --version "$TRAEFIK_CHART_VERSION" \
+            --namespace traefik --create-namespace \
+            -f deploy/traefik-values.yaml --wait --timeout 5m
+
+      - name: Install Soulside Notes chart
+        run: |
+          helm upgrade --install soulside deploy/helm/soulside-notes \
+            --namespace soulside --create-namespace \
+            -f deploy/helm/values-local.yaml \
+            --set api.image.tag=ci --set web.image.tag=ci \
+            --wait --timeout 6m
+
+      - name: Helm test (in-cluster)
+        run: helm test soulside --namespace soulside --logs
+
+      - name: End-to-end through the Ingress
+        run: |
+          set -euo pipefail
+          base=http://localhost:8080
+
+          echo "Frontend:"
+          curl -fsS "$base/" | grep -q '<div id="root">' && echo "  OK index.html"
+
+          echo "API (simulated 5% error rate, so retry):"
+          curl -fsS --retry 5 --retry-all-errors --retry-delay 1 "$base/api/notes?limit=3" \
+            | jq -e '.items | length > 0' >/dev/null && echo "  OK /api/notes"
+
+          echo "WebSocket upgrade through the Ingress:"
+          # The connection stays open after a successful upgrade, so curl
+          # exits on --max-time; only the status line matters.
+          status=$(curl -s -i --http1.1 --max-time 5 \
+            -H "Connection: Upgrade" -H "Upgrade: websocket" \
+            -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
+            "$base/ws" | head -n 1 || true)
+          echo "  $status"
+          echo "$status" | grep -q " 101 "
+
+      - name: Persistence survives a Mongo restart
+        run: |
+          set -euo pipefail
+          # Single quotes on purpose: $(cat ...) must run inside the pod, where the secret is mounted.
+          # shellcheck disable=SC2016
+          count='mongosh --quiet -u root -p "$(cat /run/secrets/mongo_root_password)" --authenticationDatabase admin soulside --eval "db.notes.countDocuments()"'
+          before=$(kubectl -n soulside exec soulside-mongo-0 -- sh -c "$count")
+          kubectl -n soulside delete pod soulside-mongo-0 --wait=true
+          # The StatefulSet recreates the pod under the same name (and same volume).
+          until kubectl -n soulside get pod soulside-mongo-0 >/dev/null 2>&1; do sleep 2; done
+          kubectl -n soulside wait --for=condition=Ready pod/soulside-mongo-0 --timeout=180s
+          after=$(kubectl -n soulside exec soulside-mongo-0 -- sh -c "$count")
+          echo "notes before restart: $before, after: $after"
+          test "$before" -gt 0 && test "$before" = "$after"
+
+      - name: Diagnostics
+        if: failure()
+        run: |
+          kubectl get pods,svc,ingress,pvc -A -o wide
+          kubectl -n soulside describe pods
+          for p in $(kubectl -n soulside get pods -o name); do
+            echo "----- logs $p"; kubectl -n soulside logs "$p" --all-containers --tail=100 || true
+          done
+
+  deploy:
+    name: Deploy to EKS
+    needs: [helm-lint, kind-smoke-test]
+    # Runs on merges to main once the EKS cluster exists. Set the repository
+    # variable EKS_CLUSTER_NAME (and AWS_REGION) after `terraform apply` in infra/eks.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.EKS_CLUSTER_NAME != ''
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write   # OIDC token for AWS, no stored access keys
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      CLUSTER: ${{ vars.EKS_CLUSTER_NAME }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: azure/setup-helm@v5
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Configure kubectl
+        run: aws eks update-kubeconfig --name "$CLUSTER" --region "$AWS_REGION"
+
+      - name: Helm upgrade
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          helm upgrade --install soulside deploy/helm/soulside-notes \
+            --namespace soulside \
+            -f deploy/helm/values-eks.yaml \
+            --set api.image.repository="ghcr.io/$owner/soulside-notes-api" \
+            --set web.image.repository="ghcr.io/$owner/soulside-notes-web" \
+            --set api.image.tag="$GITHUB_SHA" \
+            --set web.image.tag="$GITHUB_SHA" \
+            --rollback-on-failure --wait --timeout 10m
+
+      - name: Helm test
+        run: helm test soulside --namespace soulside --logs
+
+      - name: App URL
+        run: |
+          host=$(kubectl -n soulside get ingress soulside -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          echo "Deployed ${GITHUB_SHA::7}: http://$host" | tee -a "$GITHUB_STEP_SUMMARY"
