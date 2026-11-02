@@ -14,7 +14,7 @@ merges to `main`.
 | `mongo` service + `mongo-data` volume | StatefulSet + PersistentVolumeClaim + headless Service |
 | `redis` service + `redis-data` volume | StatefulSet + PersistentVolumeClaim + headless Service |
 | `proxy` (nginx, `/api`, `/ws`, `/`) | Ingress: Traefik locally, AWS ALB on EKS, both pass WebSocket upgrades through |
-| `secrets: mongo_root_password` | Secret, mounted at the same `/run/secrets/mongo_root_password` path, so `server/db.ts` is unchanged |
+| `secrets: mongo_root_password` | Secret, mounted as a file and passed by path through the same env vars as Compose, so `server/db.ts` is unchanged |
 | `healthcheck:` | startup, liveness and readiness probes (`/healthz` and `/readyz` on the API) |
 | `depends_on: service_healthy` | init container that waits for Mongo and Redis |
 | `logging:` json-file 10 MB × 3 | kubelet `containerLogMaxSize: 10Mi`, `containerLogMaxFiles: 3` (set in Terraform) |

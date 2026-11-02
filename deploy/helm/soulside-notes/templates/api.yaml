@@ -46,6 +46,8 @@ spec:
         # Restart the pod if the Mongo password Secret changes.
         checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
     spec:
+      # These pods never call the Kubernetes API, so don't mount a token they don't need.
+      automountServiceAccountToken: false
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -110,7 +112,7 @@ spec:
             - name: MONGO_USER
               value: {{ .Values.api.mongoUser | quote }}
             - name: MONGO_PASSWORD_FILE
-              value: /run/secrets/mongo_root_password
+              value: /etc/soulside/secrets/mongo_root_password
             - name: MONGO_DB_NAME
               value: {{ .Values.api.mongoDbName | quote }}
             - name: REDIS_URL
@@ -157,7 +159,10 @@ spec:
               drop: ["ALL"]
           volumeMounts:
             - name: mongo-secret
-              mountPath: /run/secrets
+              # Not /run/secrets: Kubernetes mounts its service-account token under
+              # /var/run/secrets (the same folder in these images), and a read-only
+              # mount there stops the container from starting.
+              mountPath: /etc/soulside/secrets
               readOnly: true
             # tsx compiles TypeScript on the fly and caches it under /tmp.
             - name: tmp

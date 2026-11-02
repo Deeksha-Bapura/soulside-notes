@@ -36,6 +36,8 @@ spec:
         {{- include "soulside.labels" . | nindent 8 }}
         app.kubernetes.io/component: redis
     spec:
+      # These pods never call the Kubernetes API, so don't mount a token they don't need.
+      automountServiceAccountToken: false
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}

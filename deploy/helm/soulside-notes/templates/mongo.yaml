@@ -40,6 +40,8 @@ spec:
         {{- include "soulside.labels" . | nindent 8 }}
         app.kubernetes.io/component: mongo
     spec:
+      # These pods never call the Kubernetes API, so don't mount a token they don't need.
+      automountServiceAccountToken: false
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -61,7 +63,7 @@ spec:
             - name: MONGO_INITDB_ROOT_USERNAME
               value: {{ .Values.mongo.rootUser | quote }}
             - name: MONGO_INITDB_ROOT_PASSWORD_FILE
-              value: /run/secrets/mongo_root_password
+              value: /etc/soulside/secrets/mongo_root_password
           ports:
             - name: mongo
               containerPort: 27017
@@ -102,7 +104,10 @@ spec:
             - name: configdb
               mountPath: /data/configdb
             - name: mongo-secret
-              mountPath: /run/secrets
+              # Not /run/secrets: Kubernetes mounts its service-account token under
+              # /var/run/secrets (the same folder in these images), and a read-only
+              # mount there stops the container from starting.
+              mountPath: /etc/soulside/secrets
               readOnly: true
       volumes:
         - name: configdb

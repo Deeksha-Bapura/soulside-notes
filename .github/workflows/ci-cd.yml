@@ -187,7 +187,7 @@ jobs:
           set -euo pipefail
           # Single quotes on purpose: $(cat ...) must run inside the pod, where the secret is mounted.
           # shellcheck disable=SC2016
-          count='mongosh --quiet -u root -p "$(cat /run/secrets/mongo_root_password)" --authenticationDatabase admin soulside --eval "db.notes.countDocuments()"'
+          count='mongosh --quiet -u root -p "$(cat /etc/soulside/secrets/mongo_root_password)" --authenticationDatabase admin soulside --eval "db.notes.countDocuments()"'
           before=$(kubectl -n soulside exec soulside-mongo-0 -- sh -c "$count")
           kubectl -n soulside delete pod soulside-mongo-0 --wait=true
           # The StatefulSet recreates the pod under the same name (and same volume).
