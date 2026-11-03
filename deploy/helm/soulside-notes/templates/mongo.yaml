@@ -60,16 +60,12 @@ spec:
           image: {{ include "soulside.image" (dict "ctx" . "image" .Values.mongo.image) }}
           imagePullPolicy: {{ .Values.mongo.image.pullPolicy }}
           env:
-  image:
-    repository: mongo
-    # 8.2, not 8.0: MongoDB 8.0 refuses to start on Linux kernels 6.19-7.0
-    # (MongoDB issue SERVER-121912), which GitHub's runners and newer nodes use.
-    tag: "8.2"            - name: MONGO_INITDB_ROOT_USERNAME
+            - name: MONGO_INITDB_ROOT_USERNAME
               value: {{ .Values.mongo.rootUser | quote }}
-            # Workaround for MongoDB's startup check on Linux kernels 6.19-7.0     <- new
-            # (SERVER-121912). Harmless on other kernels.                           <- new
-            - name: GLIBC_TUNABLES                                                  <- new
-              value: glibc.pthread.rseq=1                                           <- new
+            # Workaround for MongoDB's startup check on Linux kernels 6.19-7.0
+            # (SERVER-121912). Harmless on other kernels.
+            - name: GLIBC_TUNABLES
+              value: glibc.pthread.rseq=1
             - name: MONGO_INITDB_ROOT_PASSWORD_FILE
               value: /etc/soulside/secrets/mongo_root_password
           ports:
@@ -94,49 +90,3 @@ spec:
             exec:
               command:
                 - mongosh
-                - --quiet
-                - --eval
-                - "db.adminCommand('ping').ok"
-            periodSeconds: 10
-            timeoutSeconds: 10
-            failureThreshold: 3
-          resources:
-            {{- toYaml .Values.mongo.resources | nindent 12 }}
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
-          volumeMounts:
-            - name: data
-              mountPath: /data/db
-            - name: configdb
-              mountPath: /data/configdb
-            - name: mongo-secret
-              # Not /run/secrets: Kubernetes mounts its service-account token under
-              # /var/run/secrets (the same folder in these images), and a read-only
-              # mount there stops the container from starting.
-              mountPath: /etc/soulside/secrets
-              readOnly: true
-      volumes:
-        - name: configdb
-          emptyDir: {}
-        - name: mongo-secret
-          secret:
-            secretName: {{ include "soulside.mongoSecretName" . }}
-            defaultMode: 0440
-            items:
-              - key: mongo-root-password
-                path: mongo_root_password
-  volumeClaimTemplates:
-    - metadata:
-        name: data
-        labels:
-          {{- include "soulside.selectorLabels" (dict "ctx" . "component" "mongo") | nindent 10 }}
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        {{- with .Values.mongo.persistence.storageClassName }}
-        storageClassName: {{ . | quote }}
-        {{- end }}
-        resources:
-          requests:
-            storage: {{ .Values.mongo.persistence.size }}
