@@ -84,9 +84,55 @@ spec:
             periodSeconds: 20
             timeoutSeconds: 5
             failureThreshold: 3
-          # Same check as the Compose healthcheck. `ping` doesn't need
+                    # Same check as the Compose healthcheck. `ping` doesn't need
           # authentication, so the password never appears in process args.
           readinessProbe:
             exec:
               command:
                 - mongosh
+                - --quiet
+                - --eval
+                - "db.adminCommand('ping').ok"
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.mongo.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /data/db
+            - name: configdb
+              mountPath: /data/configdb
+            - name: mongo-secret
+              # Not /run/secrets: Kubernetes mounts its service-account token under
+              # /var/run/secrets (the same folder in these images), and a read-only
+              # mount there stops the container from starting.
+              mountPath: /etc/soulside/secrets
+              readOnly: true
+      volumes:
+        - name: configdb
+          emptyDir: {}
+        - name: mongo-secret
+          secret:
+            secretName: {{ include "soulside.mongoSecretName" . }}
+            defaultMode: 0440
+            items:
+              - key: mongo-root-password
+                path: mongo_root_password
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "soulside.selectorLabels" (dict "ctx" . "component" "mongo") | nindent 10 }}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.mongo.persistence.storageClassName }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.mongo.persistence.size }}
