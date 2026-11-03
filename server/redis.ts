@@ -29,3 +29,9 @@ export function getRedisClient(): RedisClientType {
   }
   return client;
 }
+export async function closeRedisConnection(): Promise<void> {
+  if (client) {
+    await client.quit();
+    client = null;
+  }
+}

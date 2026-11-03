@@ -1,0 +1,22 @@
+# Local kind cluster (infra/local). Images are built on your machine and
+# loaded into kind with `kind load docker-image`, so nothing is pulled from GHCR.
+api:
+  image:
+    repository: soulside-api
+    tag: dev
+    pullPolicy: Never
+
+web:
+  image:
+    repository: soulside-web
+    tag: dev
+    pullPolicy: Never
+  replicas: 1
+
+ingress:
+  enabled: true
+  className: traefik
+
+mongo:
+  persistence:
+    size: 1Gi

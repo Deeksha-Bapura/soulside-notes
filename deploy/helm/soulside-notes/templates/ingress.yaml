@@ -1,0 +1,61 @@
+{{- if .Values.ingress.enabled }}
+{{- $fullname := include "soulside.fullname" . }}
+# Replaces the nginx reverse-proxy container (nginx.proxy.conf):
+#   /ws  -> api   (WebSocket upgrade)
+#   /api -> api
+#   /    -> web
+#
+# WebSockets: Traefik (local) and the AWS ALB (EKS) both pass the HTTP
+# Upgrade handshake through without extra config, unlike nginx's
+# `proxy_set_header Upgrade/Connection`. What does need setting is the idle
+# timeout, because the client sends no heartbeats: an ALB closes idle
+# connections after 60s by default. values-eks.yaml raises that to 1 hour.
+#
+# Rule order matters for the ALB, which evaluates paths top to bottom, so the
+# specific prefixes come before "/".
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "soulside.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - {{- with .Values.ingress.host }}
+      host: {{ . | quote }}
+      {{- end }}
+      http:
+        paths:
+          - path: /ws
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $fullname }}-api
+                port:
+                  name: http
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $fullname }}-api
+                port:
+                  name: http
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $fullname }}-web
+                port:
+                  name: http
+{{- end }}

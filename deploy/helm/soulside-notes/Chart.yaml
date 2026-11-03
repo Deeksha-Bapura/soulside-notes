@@ -1,0 +1,20 @@
+apiVersion: v2
+name: soulside-notes
+description: Soulside Notes (React frontend, Express API with WebSockets, MongoDB, Redis) on Kubernetes
+type: application
+# Chart version: bump when the templates change.
+version: 0.1.0
+# Default image tag when values don't set one. CI overrides it with the commit SHA.
+appVersion: "latest"
+kubeVersion: ">=1.29.0-0"
+keywords:
+  - express
+  - react
+  - mongodb
+  - redis
+  - websocket
+maintainers:
+  - name: Deeksha Bapura
+    url: https://github.com/Deeksha-Bapura
+sources:
+  - https://github.com/Deeksha-Bapura/soulside-notes

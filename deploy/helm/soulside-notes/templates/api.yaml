@@ -1,0 +1,179 @@
+{{- $fullname := include "soulside.fullname" . }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-api
+  labels:
+    {{- include "soulside.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+  {{- with .Values.api.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  selector:
+    {{- include "soulside.selectorLabels" (dict "ctx" . "component" "api") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.api.port }}
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-api
+  labels:
+    {{- include "soulside.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  replicas: {{ .Values.api.replicas }}
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Start the new pod and wait for /readyz before stopping the old one.
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      {{- include "soulside.selectorLabels" (dict "ctx" . "component" "api") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "soulside.labels" . | nindent 8 }}
+        app.kubernetes.io/component: api
+      annotations:
+        # Restart the pod if the Mongo password Secret changes.
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      # These pods never call the Kubernetes API, so don't mount a token they don't need.
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        {{- include "soulside.podSecurity" . | nindent 8 }}
+      terminationGracePeriodSeconds: 30
+      # Replaces Compose's `depends_on: condition: service_healthy`: hold the
+      # API container until Mongo and Redis accept TCP connections.
+      initContainers:
+        - name: wait-for-deps
+          image: {{ include "soulside.image" (dict "ctx" . "image" .Values.api.image) }}
+          imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+          command:
+            - node
+            - -e
+            - |
+              const net = require('net');
+              const targets = [
+                ['{{ $fullname }}-mongo', 27017],
+                ['{{ $fullname }}-redis', 6379],
+              ];
+              const tryConnect = ([host, port]) => new Promise((resolve) => {
+                const socket = net.connect({ host, port, timeout: 2000 });
+                socket.once('connect', () => { socket.destroy(); resolve(true); });
+                socket.once('timeout', () => { socket.destroy(); resolve(false); });
+                socket.once('error', () => resolve(false));
+              });
+              (async () => {
+                for (const target of targets) {
+                  while (!(await tryConnect(target))) {
+                    console.log(`waiting for ${target[0]}:${target[1]}`);
+                    await new Promise((r) => setTimeout(r, 2000));
+                  }
+                  console.log(`${target[0]}:${target[1]} is up`);
+                }
+              })();
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      containers:
+        - name: api
+          image: {{ include "soulside.image" (dict "ctx" . "image" .Values.api.image) }}
+          imagePullPolicy: {{ .Values.api.image.pullPolicy }}
+          env:
+            # Same variables Compose set; server/db.ts builds the connection
+            # string from these plus the mounted password file.
+            - name: MONGO_HOST
+              value: {{ $fullname }}-mongo
+            - name: MONGO_USER
+              value: {{ .Values.api.mongoUser | quote }}
+            - name: MONGO_PASSWORD_FILE
+              value: /etc/soulside/secrets/mongo_root_password
+            - name: MONGO_DB_NAME
+              value: {{ .Values.api.mongoDbName | quote }}
+            - name: REDIS_URL
+              value: redis://{{ $fullname }}-redis:6379
+            {{- with .Values.api.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.api.port }}
+          # The server only starts listening after it has connected to Mongo
+          # and Redis and seeded an empty database, so give it time on first
+          # boot before liveness checks begin.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 24
+          # Liveness: process alive? Deliberately ignores Mongo/Redis, since
+          # restarting the API can't fix a database outage.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Readiness: Mongo and Redis reachable, and not shutting down.
+          # Failing it removes the pod from the Service without restarting it.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: mongo-secret
+              # Not /run/secrets: Kubernetes mounts its service-account token under
+              # /var/run/secrets (the same folder in these images), and a read-only
+              # mount there stops the container from starting.
+              mountPath: /etc/soulside/secrets
+              readOnly: true
+            # tsx compiles TypeScript on the fly and caches it under /tmp.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: mongo-secret
+          secret:
+            secretName: {{ include "soulside.mongoSecretName" . }}
+            defaultMode: 0440
+            items:
+              - key: mongo-root-password
+                path: mongo_root_password
+        - name: tmp
+          emptyDir: {}

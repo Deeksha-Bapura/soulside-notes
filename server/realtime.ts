@@ -130,7 +130,7 @@ export function attachRealtime(server: Server) {
   // status — this is what makes "server-pushed transitions arriving while
   // you're looking at a note" an actual thing you can observe and handle,
   // not just a theoretical scenario.
-    setInterval(async () => {
+  const autoApproveTimer = setInterval(async () => {
     const subscribedNoteIds = new Set<string>();
     for (const client of clients) {
       client.subscribedNoteIds.forEach((id) => subscribedNoteIds.add(id));
@@ -162,6 +162,21 @@ export function attachRealtime(server: Server) {
   console.log('Real-time WebSocket channel attached at /ws');
 
   return {
+    /**
+     * Stop the simulated-actor timer and close every open socket, so the
+     * HTTP server can finish closing during a graceful shutdown (open
+     * WebSocket connections would otherwise keep it alive until the
+     * Kubernetes termination grace period runs out).
+     */
+    close() {
+      clearInterval(autoApproveTimer);
+      for (const client of wss.clients) {
+        // 1001 = "going away": tells the browser to reconnect, which lands
+        // it on a healthy pod.
+        client.close(1001, 'server shutting down');
+      }
+      wss.close();
+    },
     broadcastVersionAdded(noteId: string, version: { id: string; revision: number }) {
       broadcastToSubscribers(noteId, {
         type: 'note.version_added',

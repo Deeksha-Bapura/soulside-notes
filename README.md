@@ -30,6 +30,13 @@ npx tsx scripts/scenario_5_no_leak.ts
 ```
 See `scripts/README.md` for what each proves and its actual recorded results.
 
+## Running on Kubernetes
+
+The same five services also run on Kubernetes: a Helm chart, Terraform for a
+local kind cluster or EKS, and a GitHub Actions pipeline that smoke-tests every
+PR on a throwaway cluster and deploys merges to `main`. See
+[`deploy/README.md`](deploy/README.md).
+
 ## Scope: what's built deeply vs. minimally vs. cut
 
 This project went through two passes: an initial build covering the core architecture,

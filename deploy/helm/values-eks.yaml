@@ -1,0 +1,35 @@
+# EKS (infra/eks). Images come from GHCR; CI sets api.image.tag and
+# web.image.tag to the commit SHA on every deploy.
+
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    # Route straight to pod IPs (works with the VPC CNI, no NodePorts needed).
+    alb.ingress.kubernetes.io/target-type: ip
+    # The browser's WebSocket sends no heartbeats; the ALB default idle
+    # timeout of 60s would drop quiet connections every minute.
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=3600
+    # HTTPS: uncomment once you have an ACM certificate for a domain.
+    # alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    # alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:REGION:ACCOUNT:certificate/ID
+    # alb.ingress.kubernetes.io/ssl-redirect: "443"
+
+# Per-target-group ALB health checks. Without these the ALB checks "/" on the
+# API, which returns 404, and marks the API unhealthy.
+api:
+  service:
+    annotations:
+      alb.ingress.kubernetes.io/healthcheck-path: /healthz
+web:
+  service:
+    annotations:
+      alb.ingress.kubernetes.io/healthcheck-path: /
+
+mongo:
+  persistence:
+    storageClassName: gp3
+redis:
+  persistence:
+    storageClassName: gp3
